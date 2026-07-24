@@ -141,8 +141,8 @@ void OverlayService::Create(RenderSystemD3D11* apRenderSystem) noexcept
     // Sob Wine/Proton, o CefInitialize do overlay CEF bate um CHECK do Chromium
     // (int3, 0x80000003, dentro da libcef — ver docs/cef-proton.md). O CEF é
     // pulado aqui; o resto do multiplayer funciona sem o overlay web. m_pOverlay
-    // fica nulo e todos os acessos a ele são guardados. Um overlay ImGui nativo é
-    // o plano (Fase 4 do roadmap).
+    // fica nulo e nenhum caminho pode tocar a API do CEF (nem tipos auxiliares
+    // como CefListValue), pois ela não foi inicializada. O ImGui atende o Wine.
     if (IsRunningUnderWine())
     {
         spdlog::warn("[overlay] Wine/Proton detected - skipping CEF overlay (CefInitialize crashes under Wine)");
@@ -285,6 +285,9 @@ void OverlayService::SendSystemMessage(const std::string& acMessage)
 
 void OverlayService::SetPlayerHealthPercentage(uint32_t aFormId) const noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
     if (!pActor)
     {
@@ -319,6 +322,9 @@ void OverlayService::OnUpdate(const UpdateEvent&) noexcept
 
 void OverlayService::OnConnectedEvent(const ConnectedEvent& acEvent) noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     SendToOverlay("connect");
 
     auto pArguments = CefListValue::Create();
@@ -333,6 +339,9 @@ void OverlayService::OnDisconnectedEvent(const DisconnectedEvent&) noexcept
 
 void OverlayService::OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     const auto* pPlayerComponent = m_world.try_get<PlayerComponent>(aEntity);
     if (!pPlayerComponent)
         return;
@@ -357,6 +366,9 @@ void OverlayService::OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::enti
 
 void OverlayService::OnPlayerComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     const auto& playerComponent = m_world.get<PlayerComponent>(aEntity);
 
     auto pArguments = CefListValue::Create();
@@ -393,6 +405,9 @@ void OverlayService::OnPlayerDialogue(const NotifyPlayerDialogue& acMessage) noe
 
 void OverlayService::OnConnectionError(const ConnectionErrorEvent& acConnectedEvent) const noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     auto pArgs = CefListValue::Create();
     pArgs->SetString(0, acConnectedEvent.ErrorDetail.c_str());
     SendToOverlay("triggerError", pArgs);
@@ -400,6 +415,9 @@ void OverlayService::OnConnectionError(const ConnectionErrorEvent& acConnectedEv
 
 void OverlayService::OnPlayerJoined(const NotifyPlayerJoined& acMessage) noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);
     pArguments->SetString(1, acMessage.Username.c_str());
@@ -413,6 +431,9 @@ void OverlayService::OnPlayerJoined(const NotifyPlayerJoined& acMessage) noexcep
 
 void OverlayService::OnPlayerLeft(const NotifyPlayerLeft& acMessage) noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);
     pArguments->SetString(1, acMessage.Username.c_str());
@@ -421,6 +442,9 @@ void OverlayService::OnPlayerLeft(const NotifyPlayerLeft& acMessage) noexcept
 
 void OverlayService::OnPlayerLevel(const NotifyPlayerLevel& acMessage) noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);
     pArguments->SetInt(1, acMessage.NewLevel);
@@ -429,6 +453,9 @@ void OverlayService::OnPlayerLevel(const NotifyPlayerLevel& acMessage) noexcept
 
 void OverlayService::OnPlayerCellChanged(const NotifyPlayerCellChanged& acMessage) const noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);
     String cellName = GetCellName(acMessage.WorldSpaceId, acMessage.CellId);
@@ -465,6 +492,9 @@ void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
 
 void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& acMessage) noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     const float percentage = acMessage.Percentage >= 0.f ? acMessage.Percentage : 0.f;
 
     auto pArguments = CefListValue::Create();
@@ -486,6 +516,9 @@ void OverlayService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
 
 void OverlayService::RunDebugDataUpdates() noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     static std::chrono::steady_clock::time_point lastSendTimePoint;
     constexpr auto cDelayBetweenUpdates = 1000ms;
 

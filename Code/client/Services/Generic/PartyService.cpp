@@ -125,6 +125,10 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
             pWorldEncountersEnabled->f = 1.f;
         }
 
+        auto& overlay = m_world.GetOverlayService();
+        if (!overlay.IsAvailable())
+            return;
+
         auto pArguments = CefListValue::Create();
 
         auto pPlayerIds = CefListValue::Create();
@@ -134,7 +138,7 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
         pArguments->SetList(0, pPlayerIds);
         pArguments->SetInt(1, acPartyInfo.LeaderPlayerId);
 
-        m_world.GetOverlayService().SendToOverlay("partyInfo", pArguments);
+        overlay.SendToOverlay("partyInfo", pArguments);
     }
 }
 
@@ -144,9 +148,13 @@ void PartyService::OnPartyInvite(const NotifyPartyInvite& acPartyInvite) noexcep
 
     m_invitations[acPartyInvite.InviterId] = acPartyInvite.ExpiryTick;
 
+    auto& overlay = m_world.GetOverlayService();
+    if (!overlay.IsAvailable())
+        return;
+
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acPartyInvite.InviterId);
-    m_world.GetOverlayService().SendToOverlay("partyInviteReceived", pArguments);
+    overlay.SendToOverlay("partyInviteReceived", pArguments);
 }
 
 void PartyService::OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcept

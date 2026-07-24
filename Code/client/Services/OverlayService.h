@@ -60,9 +60,10 @@ struct OverlayService
     void SetVersion(const std::string& acVersion);
 
     OverlayApp* GetOverlayApp() const noexcept { return m_pOverlay.get(); }
+    [[nodiscard]] bool IsAvailable() const noexcept { return m_pOverlay.get() != nullptr; }
 
-    // Envia um evento à UI do overlay, guardando o caso em que o overlay não
-    // existe (Wine/Proton: o CEF é pulado — ver OverlayService::Create).
+    // Envia um evento à UI do overlay. Callers that construct CEF values must
+    // check IsAvailable() before touching the CEF API.
     void SendToOverlay(const std::string& acFunction, const CefRefPtr<CefListValue>& apArguments = nullptr) const noexcept;
 
     void SendSystemMessage(const std::string& acMessage);
