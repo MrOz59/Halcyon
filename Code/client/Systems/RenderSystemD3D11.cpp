@@ -6,6 +6,8 @@
 #include <Services/OverlayService.h>
 #include <Services/ImguiService.h>
 
+#include "LinuxDiag.h"
+
 #include <d3d11.h>
 
 RenderSystemD3D11::RenderSystemD3D11(OverlayService& aOverlay, ImguiService& aImguiService)
@@ -40,9 +42,13 @@ void RenderSystemD3D11::OnDeviceCreation(IDXGISwapChain* apSwapChain, ID3D11Devi
     m_pDevice = apDevice;
     m_pDeviceContext = apContext;
 
+    LinuxDiagStep("OnDeviceCreation: before imguiService.Create");
     m_imguiService.Create(this, GetWindow());
+    LinuxDiagStep("OnDeviceCreation: before overlay.Create");
     m_overlay.Create(this);
+    LinuxDiagStep("OnDeviceCreation: before ArrangeGameWindows");
     DebugService::ArrangeGameWindows(GetWindow());
+    LinuxDiagStep("OnDeviceCreation: complete");
 }
 
 void RenderSystemD3D11::OnRender()
