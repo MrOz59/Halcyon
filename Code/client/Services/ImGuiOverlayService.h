@@ -14,14 +14,11 @@
 
 #include <TiltedCore/Stl.hpp>
 
+#include <entt/entt.hpp>
+
 struct World;
 struct TransportService;
 struct ImguiService;
-
-namespace entt
-{
-class dispatcher;
-}
 
 struct ConnectedEvent;
 struct DisconnectedEvent;

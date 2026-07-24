@@ -177,11 +177,25 @@ void ProcessKeyboard(uint16_t aKey, uint16_t aScanCode, cef_key_event_type_t aTy
     auto& overlay = *s_pOverlay;
 
     // Sob Wine/Proton não há overlay CEF; a toggle key (F2) alterna o overlay
-    // ImGui nativo. Só no keyup, e só quando o jogador está no jogo.
+    // ImGui nativo. Só no keyup, e só quando o jogador está no jogo. Ao alternar,
+    // liberamos/prendemos o cursor e o input do jogo como o SetUIActive fazia.
     if (auto* pImGuiOverlay = World::Get().GetImGuiOverlayService())
     {
         if (aType == KEYEVENT_KEYUP && IsToggleKey(aKey) && overlay.GetInGame())
+        {
             pImGuiOverlay->Toggle();
+            const bool uiVisible = pImGuiOverlay->IsVisible();
+
+            // Com a UI aberta, desliga o input do jogo e mostra o cursor; ao
+            // fechar, faz o inverso.
+            TiltedPhoques::DInputHook::Get().SetEnabled(uiVisible);
+            if (uiVisible)
+                while (ShowCursor(TRUE) < 0)
+                    ;
+            else
+                while (ShowCursor(FALSE) >= 0)
+                    ;
+        }
 
         return; // sem CEF: nada mais a rotear pelo caminho do browser
     }
@@ -311,6 +325,19 @@ UINT GetRealACP()
 
 LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+    // Sob Wine/Proton não há overlay CEF; quando o overlay ImGui está visível,
+    // encaminhamos os eventos de janela direto para o ImGui_ImplWin32 (senão os
+    // widgets não recebem teclado/mouse). O DebugService também usa esta rota.
+    if (auto* pImGuiOverlay = World::Get().GetImGuiOverlayService())
+    {
+        if (pImGuiOverlay->IsVisible())
+        {
+            auto& imgui = World::Get().ctx().at<ImguiService>();
+            imgui.WndProcHandler(hwnd, uMsg, wParam, lParam);
+        }
+        return 0;
+    }
+
     const auto pApp = s_pOverlay->GetOverlayApp();
     if (!pApp)
         return 0;
