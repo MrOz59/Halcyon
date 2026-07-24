@@ -26,7 +26,10 @@ target("SkyrimTogetherClientPayload")
         "/DYNAMICBASE:NO",
         "/SAFESEH:NO",
         "/LARGEADDRESSAWARE",
-        "/INCREMENTAL:NO", { force = true })
+        "/INCREMENTAL:NO",
+        -- As dependências (TiltedHooks e cia.) são compiladas com /GL, então o
+        -- link precisa de /LTCG; sem isso o linker aborta pedindo a flag.
+        "/LTCG", { force = true })
 
     add_syslinks(
         "user32",
