@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <system_error>
 
 #include <spdlog/spdlog.h>
@@ -30,6 +31,12 @@ spdlog::level::level_enum ResolveLevel(const Options& aOptions)
         return spdlog::level::debug;
 
     // Sem flags: respeita TE_LOG_LEVEL se definido, senão "info".
+    // std::getenv é o caminho portável (Windows + Linux); silenciamos o aviso
+    // do MSVC sobre "unsafe" localmente, sem afetar outros compiladores.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
     if (const char* env = std::getenv(kLogLevelEnv))
     {
         const auto lvl = spdlog::level::from_str(env);
@@ -37,6 +44,9 @@ spdlog::level::level_enum ResolveLevel(const Options& aOptions)
         if (lvl != spdlog::level::off || std::strcmp(env, "off") == 0)
             return lvl;
     }
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
     return spdlog::level::info;
 }
