@@ -1,6 +1,7 @@
 
 #include <Games/Skyrim/BSSystem/BSThread.h>
 #include <base/threading/ThreadUtils.h>
+#include "LinuxDiag.h"
 
 namespace
 {
@@ -8,6 +9,9 @@ void (*BSThread_Initialize)(BSThread*, int, const char*){nullptr};
 
 void Hook_BSThread_Initialize(BSThread* apThis, int aStackSize, const char* apName)
 {
+    static bool s_first = true;
+    if (s_first) { s_first = false; LinuxDiagStep("Hook_BSThread_Initialize first (before original)"); }
+
     BSThread_Initialize(apThis, aStackSize, apName);
 
     if (!apName && apThis->m_ThreadHandle)
@@ -28,6 +32,9 @@ void Hook_BSThread_Initialize(BSThread* apThis, int aStackSize, const char* apNa
 // hook this in order to redirect the game to use the new naming apis (windows 10+)
 void Hook_SetThreadName(uint32_t aThreadId, const char* apThreadName)
 {
+    static bool s_first = true;
+    if (s_first) { s_first = false; LinuxDiagStep("Hook_SetThreadName first call"); }
+
     // query thread handle
     if (auto hThread = ::OpenThread(THREAD_QUERY_INFORMATION, FALSE, aThreadId))
     {

@@ -6,6 +6,9 @@
 
 #include "BSGraphics/BSGraphicsRenderer.h"
 #include "BSRandom/BSRandom.h"
+#include "LinuxDiag.h"
+
+#include <cstdio>
 
 // shared resource by launcher
 extern HICON g_SharedWindowIcon;
@@ -54,7 +57,9 @@ void Hook_Renderer_Init(Renderer* self, BSGraphics::RendererInitOSData* aOSData,
     RealWndProc = aOSData->pWndProc;
     aOSData->pWndProc = Hook_WndProc;
 
+    LinuxDiagStep("Hook_Renderer_Init: before original Renderer_Init");
     Renderer_Init(self, aOSData, aFBData, aOut);
+    LinuxDiagStep("Hook_Renderer_Init: original returned");
 
     g_sRs = &World::Get().ctx().at<RenderSystemD3D11>();
     // This how the game does it too
@@ -70,8 +75,25 @@ void (*StopTimer)(int) = nullptr;
 // Insert us at the End
 void Hook_StopTimer(int type)
 {
+    // Diagnóstico: conta frames e marca marcos, para saber se o crash ~5s vem do
+    // render do overlay (OnRender) ou de outro subsistema. Logamos o 1o frame e a
+    // cada ~300 frames (~5s a 60fps), com fsync.
+    static uint32_t s_frame = 0;
+    ++s_frame;
+    if (s_frame == 1)
+        LinuxDiagStep("Hook_StopTimer frame 1: before OnRender");
+
     if (g_sRs)
         g_sRs->OnRender();
+
+    if (s_frame == 1)
+        LinuxDiagStep("Hook_StopTimer frame 1: OnRender returned");
+    else if (s_frame % 300 == 0)
+    {
+        char buf[64];
+        _snprintf_s(buf, _TRUNCATE, "Hook_StopTimer alive at frame %u", s_frame);
+        LinuxDiagStep(buf);
+    }
 
     StopTimer(type);
 }
