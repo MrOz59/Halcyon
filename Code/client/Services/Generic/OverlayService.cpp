@@ -159,6 +159,10 @@ void OverlayService::Create(RenderSystemD3D11* apRenderSystem) noexcept
 
 void OverlayService::Render() noexcept
 {
+    // Bombeia o loop do CEF (external_message_pump; ver OverlayApp::Initialize).
+    // Render roda todo frame, então é o ponto natural para tickar o Chromium.
+    m_pOverlay->Update();
+
     auto pPlayer = PlayerCharacter::Get();
     bool inGame = pPlayer && pPlayer->GetNiNode();
     if (inGame && !m_inGame)
