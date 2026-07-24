@@ -2,6 +2,8 @@
 
 #include <Services/OverlayService.h>
 
+#include "LinuxDiag.h"
+
 #include <OverlayApp.hpp>
 
 #include <D3D11Hook.hpp>
@@ -135,9 +137,12 @@ OverlayService::~OverlayService() noexcept
 
 void OverlayService::Create(RenderSystemD3D11* apRenderSystem) noexcept
 {
+    LinuxDiagStep("OverlayService::Create: making D3D11RenderProvider");
     m_pProvider = TiltedPhoques::MakeUnique<D3D11RenderProvider>(apRenderSystem);
+    LinuxDiagStep("OverlayService::Create: making OverlayApp/OverlayClient");
     m_pOverlay = new OverlayApp(m_pProvider.get(), new ::OverlayClient(m_transport, m_pProvider->Create()));
 
+    LinuxDiagStep("OverlayService::Create: before OverlayApp::Initialize (CEF init)");
     if (!m_pOverlay->Initialize())
     {
         spdlog::error("Overlay could not be initialized");
@@ -146,8 +151,10 @@ void OverlayService::Create(RenderSystemD3D11* apRenderSystem) noexcept
             spdlog::critical("CEF failed to initialize, exit code {}. See 'cef_types.h' for description", exitCode);
         }
     }
+    LinuxDiagStep("OverlayService::Create: Initialize returned, before client Create");
 
     m_pOverlay->GetClient()->Create();
+    LinuxDiagStep("OverlayService::Create: complete");
 }
 
 void OverlayService::Render() noexcept
