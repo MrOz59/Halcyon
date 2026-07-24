@@ -27,4 +27,9 @@ bool IsPlayer(Actor* apActor)
     return pExtension->IsPlayer();
 }
 
+bool DidLaunchSkyrimTogether()
+{
+    return true;
+}
+
 } // namespace PapyrusFunctions
