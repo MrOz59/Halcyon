@@ -8,8 +8,10 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <cwchar>
 #include <limits>
 #include <string>
+#include <TlHelp32.h>
 #include <winternl.h>
 
 #include <TiltedCore/Filesystem.hpp>
@@ -84,6 +86,89 @@ bool WriteRemoteExecutable(HANDLE aProcess, void* apAddress, const void* apData,
 
     return writeSucceeded && flushSucceeded && restoreSucceeded;
 }
+
+bool GetRemoteImageRange(HANDLE aProcess, uintptr_t& aBase, size_t& aSize)
+{
+    const auto pImageBase = static_cast<uint8_t*>(GetRemoteImageBase(aProcess));
+    if (!pImageBase)
+        return false;
+
+    IMAGE_DOS_HEADER dosHeader{};
+    SIZE_T bytesRead = 0;
+    if (!ReadProcessMemory(aProcess, pImageBase, &dosHeader, sizeof(dosHeader), &bytesRead) || bytesRead != sizeof(dosHeader) || dosHeader.e_magic != IMAGE_DOS_SIGNATURE ||
+        dosHeader.e_lfanew < 0)
+    {
+        return false;
+    }
+
+    IMAGE_NT_HEADERS64 ntHeaders{};
+    if (!ReadProcessMemory(aProcess, pImageBase + dosHeader.e_lfanew, &ntHeaders, sizeof(ntHeaders), &bytesRead) || bytesRead != sizeof(ntHeaders) ||
+        ntHeaders.Signature != IMAGE_NT_SIGNATURE || ntHeaders.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC || ntHeaders.OptionalHeader.SizeOfImage == 0)
+    {
+        return false;
+    }
+
+    aBase = reinterpret_cast<uintptr_t>(pImageBase);
+    aSize = ntHeaders.OptionalHeader.SizeOfImage;
+    return true;
+}
+
+bool FindRemoteModule(HANDLE aProcess, const std::filesystem::path& acModulePath, uintptr_t& aBase, size_t& aSize)
+{
+    const DWORD processId = GetProcessId(aProcess);
+    if (processId == 0)
+        return false;
+
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return false;
+
+    const std::wstring expectedName = acModulePath.filename().wstring();
+    MODULEENTRY32W moduleEntry{};
+    moduleEntry.dwSize = sizeof(moduleEntry);
+
+    bool found = false;
+    if (Module32FirstW(snapshot, &moduleEntry))
+    {
+        do
+        {
+            if (_wcsicmp(moduleEntry.szModule, expectedName.c_str()) == 0)
+            {
+                aBase = reinterpret_cast<uintptr_t>(moduleEntry.modBaseAddr);
+                aSize = moduleEntry.modBaseSize;
+                found = aSize != 0;
+                break;
+            }
+        } while (Module32NextW(snapshot, &moduleEntry));
+    }
+
+    CloseHandle(snapshot);
+    return found;
+}
+
+bool IsPayloadRel32Reachable(uintptr_t aGameBase, size_t aGameSize, uintptr_t aPayloadBase, size_t aPayloadSize)
+{
+    if (aGameSize == 0 || aPayloadSize == 0 || aGameBase > std::numeric_limits<uintptr_t>::max() - (aGameSize - 1) ||
+        aPayloadBase > std::numeric_limits<uintptr_t>::max() - (aPayloadSize - 1))
+    {
+        return false;
+    }
+
+    const uintptr_t gameEnd = aGameBase + aGameSize - 1;
+    const uintptr_t payloadEnd = aPayloadBase + aPayloadSize - 1;
+    if (gameEnd > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max() - 5) || payloadEnd > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max()) ||
+        aGameBase > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max() - 5) || aPayloadBase > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max()))
+    {
+        return false;
+    }
+
+    // Valida os extremos: se ambos cabem, qualquer CALL/JMP entre uma posição no
+    // .text do jogo e uma função do payload também cabe em um rel32 assinado.
+    const int64_t minimumDisplacement = static_cast<int64_t>(aPayloadBase) - static_cast<int64_t>(gameEnd + 5);
+    const int64_t maximumDisplacement = static_cast<int64_t>(payloadEnd) - static_cast<int64_t>(aGameBase + 5);
+
+    return minimumDisplacement >= std::numeric_limits<int32_t>::min() && maximumDisplacement <= std::numeric_limits<int32_t>::max();
+}
 } // namespace
 
 ExternalProcessLauncher::~ExternalProcessLauncher()
@@ -151,8 +236,9 @@ bool ExternalProcessLauncher::InjectClient(const std::filesystem::path& acPayloa
 
     WaitForSingleObject(hThread, INFINITE);
 
-    // O retorno do LoadLibraryW remoto vem truncado para 32 bits pelo exit code da
-    // thread; serve para distinguir sucesso de falha, não como HMODULE.
+    // O retorno do LoadLibraryW remoto vem truncado para 32 bits pelo exit code
+    // da thread. Ele serve apenas para detectar NULL; a base completa é obtida
+    // pela lista de módulos do processo logo abaixo.
     DWORD exitCode = 0;
     GetExitCodeThread(hThread, &exitCode);
     CloseHandle(hThread);
@@ -164,7 +250,32 @@ bool ExternalProcessLauncher::InjectClient(const std::filesystem::path& acPayloa
         return false;
     }
 
-    spdlog::info("[launch] client payload injected (truncated HMODULE=0x{:08x})", exitCode);
+    uintptr_t payloadBase = 0;
+    size_t payloadSize = 0;
+    if (!FindRemoteModule(m_process, acPayloadPath, payloadBase, payloadSize))
+    {
+        spdlog::error("[launch] payload loaded but its full module address could not be resolved");
+        return false;
+    }
+
+    uintptr_t gameBase = 0;
+    size_t gameSize = 0;
+    if (!GetRemoteImageRange(m_process, gameBase, gameSize))
+    {
+        spdlog::error("[launch] could not resolve game image range after payload injection");
+        return false;
+    }
+
+    spdlog::info("[launch] client payload loaded at 0x{:x} (size=0x{:x})", payloadBase, payloadSize);
+
+    if (!IsPayloadRel32Reachable(gameBase, gameSize, payloadBase, payloadSize))
+    {
+        spdlog::error(
+            "[launch] payload is outside rel32 hook range: game=[0x{:x},0x{:x}), payload=[0x{:x},0x{:x})", gameBase, gameBase + gameSize, payloadBase, payloadBase + payloadSize);
+        return false;
+    }
+
+    spdlog::info("[launch] client payload placement validated for all rel32 hooks");
     return true;
 }
 

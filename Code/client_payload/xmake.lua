@@ -8,6 +8,19 @@ target("SkyrimTogetherClientPayload")
     set_group("Client")
     set_symbols("debug", "hidden")
 
+    -- Vários hooks legados do client usam CALL/JMP rel32 diretamente do código
+    -- do Skyrim para funções desta DLL. Portanto o payload inteiro precisa ficar
+    -- dentro de ±2 GiB da imagem do jogo (0x140000000). Sem isto o Wine pode
+    -- aplicar ASLR para uma base baixa, o deslocamento dá wrap em 32 bits e a CPU
+    -- salta para uma página inexistente. A base 0x180000000 fica a ~1 GiB do jogo;
+    -- /FIXED faz o LoadLibrary falhar caso ela não esteja disponível, em vez de
+    -- carregar silenciosamente em uma posição incompatível.
+    add_shflags(
+        "/BASE:0x180000000",
+        "/DYNAMICBASE:NO",
+        "/FIXED",
+        { force = true })
+
     -- SkyrimTogetherClient e TiltedHooks são compilados com /GL (LTO). Ao linká-los
     -- numa DLL o linker exige /LTCG e aborta sem ele. Passar "/LTCG" como flag crua
     -- não resolve: o wrapper do linker do xmake detecta o /GL e trata a mensagem de
