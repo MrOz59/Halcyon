@@ -21,6 +21,8 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/basic_file_sink.h>
 
+#include "PayloadSupport.h"
+
 // Definidos no client (skyrimtogetherclient), linkado estaticamente aqui.
 extern void InstallStartHook();
 extern void RunTiltedInit(const std::filesystem::path& acGamePath, const TiltedPhoques::String& aExeVersion);
@@ -105,6 +107,13 @@ DWORD WINAPI InitThread(LPVOID)
 
     const std::filesystem::path gamePath = gamePathStr;
     const TiltedPhoques::String exeVersion(exeVersionStr.begin(), exeVersionStr.end());
+
+    if (!InitializePayloadSupport(gamePath, exeVersion))
+    {
+        spdlog::critical("[payload] failed to reserve RIP-relative stub memory");
+        SignalInitDone();
+        return 1;
+    }
 
     spdlog::info("[payload] game path   : {}", gamePath.string());
     spdlog::info("[payload] exe version : {}", exeVersion.c_str());

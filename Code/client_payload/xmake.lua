@@ -20,14 +20,16 @@ target("SkyrimTogetherClientPayload")
         "../",
         "../../Libraries/")
 
-    add_files("ClientPayload.cpp")
+    add_files(
+        "ClientPayload.cpp",
+        "PayloadSupport.cpp")
 
     add_deps("SkyrimTogetherClient")
 
     -- /WHOLEARCHIVE é necessário porque o client registra hooks e inicializadores
     -- via símbolos que ninguém referencia diretamente; sem ele o linker os
     -- descarta.
-    add_ldflags("/WHOLEARCHIVE:SkyrimTogetherClient")
+    add_shflags("/WHOLEARCHIVE:SkyrimTogetherClient", { force = true })
 
     add_syslinks(
         "user32",
