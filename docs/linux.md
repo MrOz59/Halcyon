@@ -4,6 +4,14 @@
 > que descreve o estado atual. Aqui ficam a **estratégia**, as **decisões** e o
 > **progresso por fase** do roadmap.
 
+## Foco do fork
+
+O objetivo prático deste fork é **fazer a parte que roda dentro do Skyrim funcionar sob
+Proton**. O bloqueador central identificado é o **crash do CEF (`libcef.dll`) na
+inicialização sob Wine/Proton**, com `D3DCompiler_47` no topo do stack — o Chromium tenta
+ligar o pipeline de GPU (ANGLE→D3D) e quebra. Diagnóstico completo e opções de correção
+em **[`cef-proton.md`](cef-proton.md)**. É a prioridade número um.
+
 ## Princípio norteador
 
 O client do Tilted é **injetado dentro do processo do jogo** (`SkyrimSE.exe`), via um
