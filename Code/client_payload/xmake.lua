@@ -16,20 +16,17 @@ target("SkyrimTogetherClientPayload")
     add_files("ClientPayload.cpp")
 
     add_deps("SkyrimTogetherClient")
-    -- O client registra hooks e inicializadores via símbolos que ninguém
-    -- referencia diretamente; sem WHOLEARCHIVE o linker os descarta.
-    add_ldflags("/WHOLEARCHIVE:SkyrimTogetherClient", { force = true })
 
-    add_ldflags(
-        "/FORCE:MULTIPLE",
-        "/IGNORE:4254,4006",
-        "/DYNAMICBASE:NO",
-        "/SAFESEH:NO",
-        "/LARGEADDRESSAWARE",
-        "/INCREMENTAL:NO",
-        -- As dependências (TiltedHooks e cia.) são compiladas com /GL, então o
-        -- link precisa de /LTCG; sem isso o linker aborta pedindo a flag.
-        "/LTCG", { force = true })
+    -- Apenas o essencial em ldflags. As libs do projeto são compiladas com /GL no
+    -- modo release, e o xmake injeta o /LTCG correspondente por conta própria —
+    -- mas um add_ldflags com force=true substitui esse conjunto gerenciado e
+    -- apaga o /LTCG, fazendo o linker abortar. É por isso que ImmersiveElf (a
+    -- outra DLL do projeto) linka sem declarar ldflags nenhuma.
+    --
+    -- /WHOLEARCHIVE é necessário porque o client registra hooks e inicializadores
+    -- via símbolos que ninguém referencia diretamente; sem ele o linker os
+    -- descarta. Sem force, para somar às flags do xmake em vez de trocá-las.
+    add_ldflags("/WHOLEARCHIVE:SkyrimTogetherClient")
 
     add_syslinks(
         "user32",
