@@ -1,5 +1,6 @@
 #include <BranchInfo.h>
 #include "CrashHandler.h"
+#include "Platform.h"
 #include <DbgHelp.h>
 #include <Windows.h>
 #include <chrono>
@@ -129,6 +130,16 @@ LONG WINAPI VectoredExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo)
 LPTOP_LEVEL_EXCEPTION_FILTER CrashHandler::m_pUnhandled;
 CrashHandler::CrashHandler()
 {
+    // A VEH registered with priority 1 observes first-chance access violations,
+    // including exceptions that Wine or the game will handle normally while
+    // loading a world. Keep the crash-filter workaround Windows-only so it cannot
+    // turn one of those recoverable exceptions into a process-wide failure.
+    if (IsRunningUnderWine())
+    {
+        m_handler = nullptr;
+        return;
+    }
+
     // Record the original (or as close as we can get) top-level unhandled exception handler.
     // We grab this so we can see if it is changed, presumably by a mod or even graphics drivers.
     // Something in STR breaks unhandled exception handling, so we'll fake it if necessary.

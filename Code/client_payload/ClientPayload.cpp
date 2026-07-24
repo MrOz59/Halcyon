@@ -15,8 +15,6 @@
 #include <Windows.h>
 
 #include <filesystem>
-#include <cstdio>
-#include <cstring>
 #include <string>
 
 #include <TiltedCore/Stl.hpp>
@@ -44,74 +42,6 @@ constexpr const wchar_t* kEnvExeVersion = L"ST_EXE_VERSION";
 // esperar a init dentro do DllMain (deadlock no loader lock), então quem espera é
 // o launcher, antes de resumir a thread principal do jogo.
 constexpr const wchar_t* kInitDoneEventName = L"Local\\SkyrimTogether_ClientInitDone";
-
-// Diagnóstico do port Linux: sob Proton o proton run engole PROTON_LOG/WINEDEBUG,
-// então instalamos um vectored handler que loga exceções fatais (com módulo e
-// offset) direto no log do payload. É a única via confiável para localizar de
-// onde vem o crash 0x80000003 (STATUS_BREAKPOINT) observado ~5s após o resume.
-// Remover quando o crash estiver resolvido.
-PVOID g_pDiagHandler = nullptr;
-
-void DescribeAddress(void* apAddress, char* apBuffer, size_t aBufferSize)
-{
-    HMODULE hModule = nullptr;
-    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(apAddress), &hModule) && hModule)
-    {
-        wchar_t modulePath[MAX_PATH]{};
-        if (GetModuleFileNameW(hModule, modulePath, MAX_PATH))
-        {
-            const std::filesystem::path p(modulePath);
-            const auto name = p.filename().string();
-            const auto offset = reinterpret_cast<uintptr_t>(apAddress) - reinterpret_cast<uintptr_t>(hModule);
-            _snprintf_s(apBuffer, aBufferSize, _TRUNCATE, "%s+0x%llx (base 0x%llx)", name.c_str(), static_cast<unsigned long long>(offset), reinterpret_cast<unsigned long long>(hModule));
-            return;
-        }
-    }
-    _snprintf_s(apBuffer, aBufferSize, _TRUNCATE, "<no module>");
-}
-
-// Grava com fsync (sobrevive a um int3 que mata o processo). Arquivo dedicado ao
-// lado da DLL do payload.
-void DiagCrashLog(const char* apLine)
-{
-    wchar_t modulePath[MAX_PATH]{};
-    GetModuleFileNameW(GetModuleHandleW(L"STClientPayload.dll"), modulePath, MAX_PATH);
-    const auto logPath = (std::filesystem::path(modulePath).parent_path() / "st_crash_diag.log").wstring();
-    HANDLE h = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h != INVALID_HANDLE_VALUE)
-    {
-        DWORD w = 0;
-        WriteFile(h, apLine, static_cast<DWORD>(strlen(apLine)), &w, nullptr);
-        WriteFile(h, "\r\n", 2, &w, nullptr);
-        FlushFileBuffers(h);
-        CloseHandle(h);
-    }
-}
-
-LONG CALLBACK DiagVectoredHandler(EXCEPTION_POINTERS* apInfo)
-{
-    const auto code = apInfo->ExceptionRecord->ExceptionCode;
-
-    // Só interessam exceções fatais/não-continuáveis. Ignora as informativas que o
-    // jogo dispara em volume (nomeação de thread etc.) para não poluir.
-    const bool isFatal = code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_BREAKPOINT || code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_STACK_OVERFLOW ||
-                         code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == 0xC0000409 /* fastfail */;
-    if (!isFatal)
-        return EXCEPTION_CONTINUE_SEARCH;
-
-    char faultDesc[512]{};
-    DescribeAddress(apInfo->ExceptionRecord->ExceptionAddress, faultDesc, sizeof(faultDesc));
-
-    char ripDesc[512]{};
-    DescribeAddress(reinterpret_cast<void*>(apInfo->ContextRecord->Rip), ripDesc, sizeof(ripDesc));
-
-    char line[1200];
-    _snprintf(line, sizeof(line), "[crash] code=0x%08lx tid=%lu\r\n  fault addr=%p %s\r\n  rip=0x%llx %s\r\n  rsp=0x%llx", code, GetCurrentThreadId(), apInfo->ExceptionRecord->ExceptionAddress,
-              faultDesc, static_cast<unsigned long long>(apInfo->ContextRecord->Rip), ripDesc, static_cast<unsigned long long>(apInfo->ContextRecord->Rsp));
-    DiagCrashLog(line);
-
-    return EXCEPTION_CONTINUE_SEARCH;
-}
 
 std::wstring ReadEnv(const wchar_t* apName)
 {
@@ -163,10 +93,7 @@ DWORD WINAPI InitThread(LPVOID)
 {
     SetupLogging();
 
-    // Handler de diagnóstico primeiro, para capturar qualquer crash desde a init.
-    g_pDiagHandler = AddVectoredExceptionHandler(1, DiagVectoredHandler);
-
-    spdlog::info("[payload] attached to game process (pid={}) diag_handler={}", GetCurrentProcessId(), g_pDiagHandler ? "ok" : "FAILED");
+    spdlog::info("[payload] attached to game process (pid={})", GetCurrentProcessId());
 
     const auto gamePathStr = ReadEnv(kEnvGamePath);
     const auto exeVersionStr = ReadEnv(kEnvExeVersion);
