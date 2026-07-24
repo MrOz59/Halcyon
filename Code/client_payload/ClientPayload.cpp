@@ -15,6 +15,8 @@
 #include <Windows.h>
 
 #include <filesystem>
+#include <cstdio>
+#include <cstring>
 #include <string>
 
 #include <TiltedCore/Stl.hpp>
@@ -68,6 +70,24 @@ void DescribeAddress(void* apAddress, char* apBuffer, size_t aBufferSize)
     _snprintf_s(apBuffer, aBufferSize, _TRUNCATE, "<no module>");
 }
 
+// Grava com fsync (sobrevive a um int3 que mata o processo). Arquivo dedicado ao
+// lado da DLL do payload.
+void DiagCrashLog(const char* apLine)
+{
+    wchar_t modulePath[MAX_PATH]{};
+    GetModuleFileNameW(GetModuleHandleW(L"STClientPayload.dll"), modulePath, MAX_PATH);
+    const auto logPath = (std::filesystem::path(modulePath).parent_path() / "st_crash_diag.log").wstring();
+    HANDLE h = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE)
+    {
+        DWORD w = 0;
+        WriteFile(h, apLine, static_cast<DWORD>(strlen(apLine)), &w, nullptr);
+        WriteFile(h, "\r\n", 2, &w, nullptr);
+        FlushFileBuffers(h);
+        CloseHandle(h);
+    }
+}
+
 LONG CALLBACK DiagVectoredHandler(EXCEPTION_POINTERS* apInfo)
 {
     const auto code = apInfo->ExceptionRecord->ExceptionCode;
@@ -85,11 +105,10 @@ LONG CALLBACK DiagVectoredHandler(EXCEPTION_POINTERS* apInfo)
     char ripDesc[512]{};
     DescribeAddress(reinterpret_cast<void*>(apInfo->ContextRecord->Rip), ripDesc, sizeof(ripDesc));
 
-    spdlog::critical("[diag] fatal exception code=0x{:08x} tid={}", code, GetCurrentThreadId());
-    spdlog::critical("[diag]   fault addr = {}  {}", apInfo->ExceptionRecord->ExceptionAddress, faultDesc);
-    spdlog::critical("[diag]   rip        = 0x{:x}  {}", apInfo->ContextRecord->Rip, ripDesc);
-    spdlog::critical("[diag]   rsp = 0x{:x}  rbp = 0x{:x}", apInfo->ContextRecord->Rsp, apInfo->ContextRecord->Rbp);
-    spdlog::default_logger()->flush();
+    char line[1200];
+    _snprintf(line, sizeof(line), "[crash] code=0x%08lx tid=%lu\r\n  fault addr=%p %s\r\n  rip=0x%llx %s\r\n  rsp=0x%llx", code, GetCurrentThreadId(), apInfo->ExceptionRecord->ExceptionAddress,
+              faultDesc, static_cast<unsigned long long>(apInfo->ContextRecord->Rip), ripDesc, static_cast<unsigned long long>(apInfo->ContextRecord->Rsp));
+    DiagCrashLog(line);
 
     return EXCEPTION_CONTINUE_SEARCH;
 }
