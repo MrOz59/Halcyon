@@ -128,7 +128,11 @@ struct MagicService
         ~MagicQueue() noexcept = default;
 
         bool Expired() const noexcept { return std::chrono::steady_clock::now() > m_expiration; }
-        static spdlog::level::level_enum m_logLevel; // Initializer at file end, non-const so debugger can change.
+        // Exposto para poder subir o log level só deste código no debugger ou numa
+        // build; non-const de propósito. inline garante definição única entre as
+        // TUs que incluem este header — sem isso o link só passa com
+        // /FORCE:MULTIPLE, que não se aplica a DLLs (STClientPayload.dll).
+        inline static spdlog::level::level_enum m_logLevel{spdlog::level::debug};
         template <typename... Args> static inline void Spdlog(spdlog::format_string_t<Args...> aFmt, Args&&... args)
         {
             spdlog::log(m_logLevel, aFmt, std::forward<Args>(args)...);
@@ -167,7 +171,3 @@ struct MagicService
     std::queue<MagicAddTargetEventQueue> m_queuedEffects;
     std::queue<MagicNotifyAddTargetQueue> m_queuedRemoteEffects;
 };
-
-// Exposed so we can increase log level of just this tricky code, in debugger or a build.
-// Non-const has to be initialized outside of class.
-spdlog::level::level_enum MagicService::MagicQueue::m_logLevel{spdlog::level::debug};
