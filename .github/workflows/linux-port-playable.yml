@@ -1,0 +1,60 @@
+name: Linux-port playable build
+
+# Gera uma build jogável do Skyrim Together (Windows PE, para rodar sob Proton)
+# a partir da branch linux-port, incluindo a correção do CEF para Wine/Proton.
+# Dispara manualmente (workflow_dispatch) e a cada push na branch linux-port.
+#
+# O binário resultante é Windows: o launcher/client é injetado no SkyrimSE.exe e
+# roda dentro do prefixo Proton. Não há build ELF nativo do client (ver docs/linux.md).
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - linux-port
+
+jobs:
+  build-windows:
+    uses: ./.github/workflows/windows.yml
+    with:
+      build-mode: 'release'
+      upload-build-for-next-job: true
+
+  package-and-upload:
+    runs-on: windows-2022
+    needs: build-windows
+    steps:
+      - name: Download artifact from the previous job
+        uses: actions/download-artifact@v4
+        with:
+          name: internal-job-files
+
+      - name: Package build and organize directories
+        shell: bash
+        run: |
+          mkdir -p str-build/SkyrimTogetherReborn
+          mv build/windows/x64/release/* str-build/SkyrimTogetherReborn
+          cp -r GameFiles/Skyrim/* str-build/
+
+      - name: Remove unnecessary build files, keep .pdb
+        shell: bash
+        run: |
+          mkdir -p str-pdb
+          mv str-build/SkyrimTogetherReborn/SkyrimTogether.pdb str-pdb/ || true
+          mv str-build/SkyrimTogetherReborn/SkyrimTogetherServer.pdb str-pdb/ || true
+          rm -f str-build/SkyrimTogetherReborn/*.pdb
+          rm -f str-build/SkyrimTogetherReborn/*.lib
+          rm -f str-build/SkyrimTogetherReborn/*.exp
+          rm -f str-build/SkyrimTogetherReborn/*Tests.exe
+
+      - name: Upload playable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyrimTogether-linux-port (${{ needs.build-windows.outputs.str-version }})
+          path: str-build/
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: Debug Symbols (${{ needs.build-windows.outputs.str-version }})
+          path: str-pdb/
