@@ -8,6 +8,13 @@ target("SkyrimTogetherClientPayload")
     set_group("Client")
     set_symbols("debug", "hidden")
 
+    -- SkyrimTogetherClient e TiltedHooks são compilados com /GL (LTO). Ao linká-los
+    -- numa DLL o linker exige /LTCG e aborta sem ele. Passar "/LTCG" como flag crua
+    -- não resolve: o wrapper do linker do xmake detecta o /GL e trata a mensagem de
+    -- restart como erro fatal. A policy de LTO integra pelo caminho gerenciado do
+    -- xmake e adiciona o /LTCG que o linker pede.
+    set_policy("build.optimization.lto", true)
+
     add_includedirs(
         ".",
         "../",
@@ -17,15 +24,9 @@ target("SkyrimTogetherClientPayload")
 
     add_deps("SkyrimTogetherClient")
 
-    -- Apenas o essencial em ldflags. As libs do projeto são compiladas com /GL no
-    -- modo release, e o xmake injeta o /LTCG correspondente por conta própria —
-    -- mas um add_ldflags com force=true substitui esse conjunto gerenciado e
-    -- apaga o /LTCG, fazendo o linker abortar. É por isso que ImmersiveElf (a
-    -- outra DLL do projeto) linka sem declarar ldflags nenhuma.
-    --
     -- /WHOLEARCHIVE é necessário porque o client registra hooks e inicializadores
     -- via símbolos que ninguém referencia diretamente; sem ele o linker os
-    -- descarta. Sem force, para somar às flags do xmake em vez de trocá-las.
+    -- descarta.
     add_ldflags("/WHOLEARCHIVE:SkyrimTogetherClient")
 
     add_syslinks(
