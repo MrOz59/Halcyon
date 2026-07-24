@@ -5,6 +5,7 @@
 #include <Services/PartyService.h>
 #include <Services/CharacterService.h>
 #include <Services/OverlayService.h>
+#include <Services/ImGuiOverlayService.h>
 #include <Services/CharacterService.h>
 #include <Services/MagicService.h>
 #include <Services/DebugService.h>
@@ -30,6 +31,8 @@ struct World : entt::registry
     const CharacterService& GetCharacterService() const noexcept { return ctx().at<const CharacterService>(); }
     OverlayService& GetOverlayService() noexcept { return ctx().at<OverlayService>(); }
     const OverlayService& GetOverlayService() const noexcept { return ctx().at<const OverlayService>(); }
+    // Só existe sob Wine/Proton (substitui o overlay CEF); nulo no Windows.
+    ImGuiOverlayService* GetImGuiOverlayService() noexcept { return ctx().find<ImGuiOverlayService>(); }
     DebugService& GetDebugService() noexcept { return ctx().at<DebugService>(); }
     const DebugService& GetDebugService() const noexcept { return ctx().at<const DebugService>(); }
     MagicService& GetMagicService() noexcept { return ctx().at<MagicService>(); }

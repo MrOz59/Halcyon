@@ -176,6 +176,16 @@ void ProcessKeyboard(uint16_t aKey, uint16_t aScanCode, cef_key_event_type_t aTy
 
     auto& overlay = *s_pOverlay;
 
+    // Sob Wine/Proton não há overlay CEF; a toggle key (F2) alterna o overlay
+    // ImGui nativo. Só no keyup, e só quando o jogador está no jogo.
+    if (auto* pImGuiOverlay = World::Get().GetImGuiOverlayService())
+    {
+        if (aType == KEYEVENT_KEYUP && IsToggleKey(aKey) && overlay.GetInGame())
+            pImGuiOverlay->Toggle();
+
+        return; // sem CEF: nada mais a rotear pelo caminho do browser
+    }
+
     const auto pApp = overlay.GetOverlayApp();
     if (!pApp)
         return;

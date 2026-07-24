@@ -7,6 +7,9 @@
 #include <Services/TransportService.h>
 #include <Services/RunnerService.h>
 #include <Services/ImguiService.h>
+#include <Services/ImGuiOverlayService.h>
+
+#include "Platform.h"
 #include <Services/PapyrusService.h>
 #include <Services/DiscordService.h>
 #include <Services/ObjectService.h>
@@ -39,6 +42,12 @@ World::World()
     ctx().emplace<InputService>(ctx().at<OverlayService>());
     ctx().emplace<CharacterService>(*this, m_dispatcher, m_transport);
     ctx().emplace<DebugService>(m_dispatcher, *this, m_transport, ctx().at<ImguiService>());
+
+    // Sob Wine/Proton o overlay CEF é pulado (CefInitialize crasha; ver
+    // OverlayService::Create), então registramos o overlay ImGui nativo no lugar.
+    if (IsRunningUnderWine())
+        ctx().emplace<ImGuiOverlayService>(*this, m_transport, m_dispatcher, ctx().at<ImguiService>());
+
     ctx().emplace<PapyrusService>(m_dispatcher);
     ctx().emplace<DiscordService>(m_dispatcher);
     ctx().emplace<ObjectService>(*this, m_dispatcher, m_transport);
