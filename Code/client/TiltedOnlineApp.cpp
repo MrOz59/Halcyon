@@ -62,18 +62,6 @@ bool TiltedOnlineApp::BeginMain()
     // diagnóstico continua.
     LinuxDiagStep("BeginMain enter");
 
-    // Diagnóstico: força o carregamento explícito da libcef.dll aqui, isolado do
-    // CEF. Se o int3 (0x80000003) acontece já no LoadLibrary, a causa é a
-    // inicialização estática/DllMain/TLS da libcef sob Wine — e não a lógica do
-    // CefInitialize. Loga o resultado com fsync antes de qualquer uso do CEF.
-    {
-        LinuxDiagStep("before LoadLibrary libcef.dll");
-        HMODULE hCef = LoadLibraryW(L"libcef.dll");
-        char buf[96];
-        _snprintf(buf, sizeof(buf), "after LoadLibrary libcef.dll -> 0x%llx (err=%lu)", reinterpret_cast<unsigned long long>(hCef), GetLastError());
-        LinuxDiagStep(buf);
-    }
-
     World::Create();
     World::Get().ctx().at<DiscordService>().Init();
     World::Get().ctx().emplace<RenderSystemD3D11>(World::Get().ctx().at<OverlayService>(), World::Get().ctx().at<ImguiService>());
