@@ -43,6 +43,57 @@ constexpr const wchar_t* kEnvExeVersion = L"ST_EXE_VERSION";
 // o launcher, antes de resumir a thread principal do jogo.
 constexpr const wchar_t* kInitDoneEventName = L"Local\\SkyrimTogether_ClientInitDone";
 
+// Diagnóstico do port Linux: sob Proton o proton run engole PROTON_LOG/WINEDEBUG,
+// então instalamos um vectored handler que loga exceções fatais (com módulo e
+// offset) direto no log do payload. É a única via confiável para localizar de
+// onde vem o crash 0x80000003 (STATUS_BREAKPOINT) observado ~5s após o resume.
+// Remover quando o crash estiver resolvido.
+PVOID g_pDiagHandler = nullptr;
+
+void DescribeAddress(void* apAddress, char* apBuffer, size_t aBufferSize)
+{
+    HMODULE hModule = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(apAddress), &hModule) && hModule)
+    {
+        wchar_t modulePath[MAX_PATH]{};
+        if (GetModuleFileNameW(hModule, modulePath, MAX_PATH))
+        {
+            const std::filesystem::path p(modulePath);
+            const auto name = p.filename().string();
+            const auto offset = reinterpret_cast<uintptr_t>(apAddress) - reinterpret_cast<uintptr_t>(hModule);
+            _snprintf_s(apBuffer, aBufferSize, _TRUNCATE, "%s+0x%llx (base 0x%llx)", name.c_str(), static_cast<unsigned long long>(offset), reinterpret_cast<unsigned long long>(hModule));
+            return;
+        }
+    }
+    _snprintf_s(apBuffer, aBufferSize, _TRUNCATE, "<no module>");
+}
+
+LONG CALLBACK DiagVectoredHandler(EXCEPTION_POINTERS* apInfo)
+{
+    const auto code = apInfo->ExceptionRecord->ExceptionCode;
+
+    // Só interessam exceções fatais/não-continuáveis. Ignora as informativas que o
+    // jogo dispara em volume (nomeação de thread etc.) para não poluir.
+    const bool isFatal = code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_BREAKPOINT || code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_STACK_OVERFLOW ||
+                         code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == 0xC0000409 /* fastfail */;
+    if (!isFatal)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    char faultDesc[512]{};
+    DescribeAddress(apInfo->ExceptionRecord->ExceptionAddress, faultDesc, sizeof(faultDesc));
+
+    char ripDesc[512]{};
+    DescribeAddress(reinterpret_cast<void*>(apInfo->ContextRecord->Rip), ripDesc, sizeof(ripDesc));
+
+    spdlog::critical("[diag] fatal exception code=0x{:08x} tid={}", code, GetCurrentThreadId());
+    spdlog::critical("[diag]   fault addr = {}  {}", apInfo->ExceptionRecord->ExceptionAddress, faultDesc);
+    spdlog::critical("[diag]   rip        = 0x{:x}  {}", apInfo->ContextRecord->Rip, ripDesc);
+    spdlog::critical("[diag]   rsp = 0x{:x}  rbp = 0x{:x}", apInfo->ContextRecord->Rsp, apInfo->ContextRecord->Rbp);
+    spdlog::default_logger()->flush();
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 std::wstring ReadEnv(const wchar_t* apName)
 {
     std::wstring buffer;
@@ -93,7 +144,10 @@ DWORD WINAPI InitThread(LPVOID)
 {
     SetupLogging();
 
-    spdlog::info("[payload] attached to game process (pid={})", GetCurrentProcessId());
+    // Handler de diagnóstico primeiro, para capturar qualquer crash desde a init.
+    g_pDiagHandler = AddVectoredExceptionHandler(1, DiagVectoredHandler);
+
+    spdlog::info("[payload] attached to game process (pid={}) diag_handler={}", GetCurrentProcessId(), g_pDiagHandler ? "ok" : "FAILED");
 
     const auto gamePathStr = ReadEnv(kEnvGamePath);
     const auto exeVersionStr = ReadEnv(kEnvExeVersion);
@@ -136,7 +190,10 @@ DWORD WINAPI InitThread(LPVOID)
     InstallStartHook();
 
     spdlog::info("[payload] running client init");
+    spdlog::default_logger()->flush();
     RunTiltedInit(gamePath, exeVersion);
+    spdlog::info("[payload] RunTiltedInit returned");
+    spdlog::default_logger()->flush();
     if (!DisableGameCodePatching())
         spdlog::warn("[payload] failed to restore one or more game code protections");
 
