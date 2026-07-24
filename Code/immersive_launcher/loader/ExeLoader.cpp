@@ -181,7 +181,8 @@ void ExeLoader::LoadTLS(const IMAGE_NT_HEADERS* apNtHeader, const IMAGE_NT_HEADE
         VirtualProtect(reinterpret_cast<LPVOID>(targetTls->StartAddressOfRawData), sourceTls->EndAddressOfRawData - sourceTls->StartAddressOfRawData, PAGE_READWRITE, &oldProtect);
 
         std::memcpy(tlsBase, reinterpret_cast<void*>(sourceTls->StartAddressOfRawData), sourceTls->EndAddressOfRawData - sourceTls->StartAddressOfRawData);
-        std::memcpy((void*)targetTls->StartAddressOfRawData, reinterpret_cast<void*>(sourceTls->StartAddressOfRawData), sourceTls->EndAddressOfRawData - sourceTls->StartAddressOfRawData);
+        std::memcpy(
+            (void*)targetTls->StartAddressOfRawData, reinterpret_cast<void*>(sourceTls->StartAddressOfRawData), sourceTls->EndAddressOfRawData - sourceTls->StartAddressOfRawData);
     }
 }
 
@@ -241,48 +242,23 @@ void ExeLoader::LoadExceptionTable(IMAGE_NT_HEADERS* apNtHeader)
     }
 }
 
-uint32_t ExeLoader::Rva2Offset(uint32_t aRva) noexcept
+bool ExeLoader::DecryptCeg(IMAGE_NT_HEADERS* apSourceNt, size_t aProgramSize)
 {
-    const auto* dos = GetRVA<const IMAGE_DOS_HEADER>(0);
-    const auto* nt = GetRVA<const IMAGE_NT_HEADERS>(dos->e_lfanew);
+    steam::CEGImageInfo info{};
+    const auto result = steam::DecryptCEGInPlace(const_cast<uint8_t*>(m_pBinary), aProgramSize, info);
+    if (result == steam::CEGDecryptResult::kInvalidImage)
+        return false;
 
-    auto* section = IMAGE_FIRST_SECTION(nt);
-    for (int i = 0; i < nt->FileHeader.NumberOfSections; i++)
+    if (result == steam::CEGDecryptResult::kDecrypted)
     {
-        if (aRva >= section[i].VirtualAddress && (aRva < section[i].VirtualAddress + section[i].Misc.VirtualSize))
-        {
-            return static_cast<uint32_t>(aRva - (section[i].VirtualAddress - section[i].PointerToRawData));
-        }
+        apSourceNt->FileHeader.NumberOfSections--;
+        apSourceNt->OptionalHeader.AddressOfEntryPoint = info.originalEntryPointRva;
     }
 
-    return 0;
+    return true;
 }
 
-void ExeLoader::DecryptCeg(IMAGE_NT_HEADERS* apSourceNt)
-{
-    auto entry = apSourceNt->OptionalHeader.AddressOfEntryPoint;
-    // analyze executable sections if the entry point is already protected
-    if (*GetOffset<uint32_t>(entry) != 0x000000e8)
-        return;
-
-    const auto* section = IMAGE_FIRST_SECTION(apSourceNt);
-    for (int i = 0; i < apSourceNt->FileHeader.NumberOfSections; i++)
-    {
-        if (!_strcmpi(reinterpret_cast<const char*>(section[i].Name), ".text"))
-        {
-            break;
-        }
-    }
-
-    steam::CEGLocationInfo info{GetOffset<uint8_t>(entry), {GetOffset<uint8_t>(section->VirtualAddress), section->SizeOfRawData}};
-
-    auto realEntry = steam::CrackCEGInPlace(info);
-
-    apSourceNt->FileHeader.NumberOfSections--;
-    apSourceNt->OptionalHeader.AddressOfEntryPoint = static_cast<uint32_t>(realEntry);
-}
-
-bool ExeLoader::Load(const uint8_t* apProgramBuffer)
+bool ExeLoader::Load(const uint8_t* apProgramBuffer, size_t aProgramSize)
 {
     m_pBinary = apProgramBuffer;
     m_moduleHandle = GetModuleHandleW(nullptr);
@@ -296,7 +272,8 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
 
     // remove protections
     auto* ntHeader = GetRVA<IMAGE_NT_HEADERS>(dosHeader->e_lfanew);
-    DecryptCeg(ntHeader);
+    if (!DecryptCeg(ntHeader, aProgramSize))
+        return false;
 
     // these point to launcher.exe's headers
     auto* sourceHeader = GetTargetRVA<IMAGE_DOS_HEADER>(0);
@@ -318,7 +295,7 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
 
     // skse64_plugin_preloader (proxy d3dx9_42_dll and others?) may hook
     // _initterm_e during LoadImports(), so we have to ensure that IAT entry exists.
-    // The simplest way to make sure all SkyrimSE IAT entries exist when mods expect 
+    // The simplest way to make sure all SkyrimSE IAT entries exist when mods expect
     // them to is to switch to those headers earlier than we used to
     DWORD oldProtect;
     VirtualProtect(sourceNtHeader, 0x1000, PAGE_EXECUTE_READWRITE, &oldProtect);

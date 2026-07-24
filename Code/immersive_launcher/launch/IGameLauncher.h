@@ -28,8 +28,8 @@ enum class Strategy
     // Caminho histórico e o padrão no Windows.
     kInProcess,
 
-    // Cria o SkyrimSE.exe como processo real e suspenso, injeta o client antes do
-    // entry point (a janela que o SKSE usa) e resume. Necessário sob Proton.
+    // Cria o SkyrimSE.exe como processo real e suspenso, restaura o .text CEG,
+    // injeta o client antes do entry point real e resume. Necessário sob Proton.
     kExternalProcess,
 };
 

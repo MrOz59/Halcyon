@@ -61,7 +61,7 @@ bool InProcessLauncher::Prepare(const LaunchRequest& acRequest)
     }
 
     ExeLoader loader(CurrentTarget.exeLoadSz);
-    if (!loader.Load(reinterpret_cast<uint8_t*>(content.data())))
+    if (!loader.Load(reinterpret_cast<uint8_t*>(content.data()), content.size()))
     {
         Die(L"Fatal error while mapping executable");
         return false;

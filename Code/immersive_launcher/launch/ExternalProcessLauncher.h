@@ -26,6 +26,11 @@ public:
     Strategy GetStrategy() const override { return Strategy::kExternalProcess; }
 
 private:
+    // O loader nativo mapeia o executável com unwind/TLS válidos, mas o Steam
+    // CEG ainda deixa o .text cifrado até o stub rodar. Descriptografa a imagem
+    // suspensa antes da injeção para que nenhum hook seja aplicado ao ciphertext.
+    bool PrepareCegImage(const std::filesystem::path& acExePath);
+
     // Escreve o caminho da DLL no processo alvo e chama LoadLibraryW lá.
     bool InjectClient(const std::filesystem::path& acPayloadPath);
 

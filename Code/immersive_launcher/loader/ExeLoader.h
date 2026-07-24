@@ -11,6 +11,7 @@
 // - 2021/2/25: Added CEG decryption method.
 
 #include <Windows.h>
+#include <cstddef>
 #include <cstdint>
 
 class ExeLoader
@@ -21,7 +22,7 @@ public:
 
     explicit ExeLoader(uint32_t aLoadLimit, TFuncHandler aFuncPtr = GetProcAddress);
 
-    bool Load(const uint8_t* apProgramBuffer);
+    bool Load(const uint8_t* apProgramBuffer, size_t aProgramSize);
 
     TEntryPoint GetEntryPoint() const { return static_cast<TEntryPoint>(m_pEntryPoint); }
 
@@ -30,17 +31,13 @@ private:
     void LoadImports(const IMAGE_NT_HEADERS* apNtHeader);
     void LoadTLS(const IMAGE_NT_HEADERS* apNtHeader, const IMAGE_NT_HEADERS* apSourceNt);
     void LoadExceptionTable(IMAGE_NT_HEADERS* apNtHeader);
-    void DecryptCeg(IMAGE_NT_HEADERS* apSourceNt);
+    bool DecryptCeg(IMAGE_NT_HEADERS* apSourceNt, size_t aProgramSize);
 
     template <typename T> inline T* GetRVA(uint32_t aRva) { return (T*)(m_pBinary + aRva); }
-
-    template <typename T> inline T* GetOffset(uint32_t aRva) { return (T*)(m_pBinary + Rva2Offset(aRva)); }
 
     template <typename T> inline T* GetTargetRVA(uint32_t aRva) { return (T*)((uint8_t*)m_moduleHandle + aRva); }
 
 private:
-    uint32_t Rva2Offset(uint32_t aRva) noexcept;
-
     const uint8_t* m_pBinary = nullptr;
     const TFuncHandler m_pFuncHandler = nullptr;
 

@@ -3,8 +3,14 @@
 
 #include "ExternalProcessLauncher.h"
 #include "Utils/Error.h"
+#include "steam/SteamCeg.h"
 
+#include <array>
+#include <cstddef>
+#include <cstring>
+#include <limits>
 #include <string>
+#include <winternl.h>
 
 #include <TiltedCore/Filesystem.hpp>
 #include <spdlog/spdlog.h>
@@ -31,6 +37,53 @@ constexpr const wchar_t* kInitDoneEventName = L"Local\\SkyrimTogether_ClientInit
 // Teto para a espera: se a init travar, é melhor seguir e deixar o jogo rodar sem
 // o client do que congelar o launcher para sempre.
 constexpr DWORD kInitTimeoutMs = 60000;
+
+void* GetRemoteImageBase(HANDLE aProcess)
+{
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll)
+        return nullptr;
+
+    using TNtQueryInformationProcess = NTSTATUS(NTAPI*)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+    const auto pNtQueryInformationProcess = reinterpret_cast<TNtQueryInformationProcess>(GetProcAddress(ntdll, "NtQueryInformationProcess"));
+    if (!pNtQueryInformationProcess)
+        return nullptr;
+
+    PROCESS_BASIC_INFORMATION processInfo{};
+    if (pNtQueryInformationProcess(aProcess, ProcessBasicInformation, &processInfo, sizeof(processInfo), nullptr) < 0 || !processInfo.PebBaseAddress)
+    {
+        return nullptr;
+    }
+
+    // ImageBaseAddress fica em 0x10 no PEB x64. Usar um offset explícito evita
+    // depender dos nomes dos campos reservados, que diferem entre o SDK e Wine.
+    static_assert(sizeof(void*) == 8);
+    constexpr size_t kPebImageBaseOffset = 0x10;
+    const auto imageBaseField = reinterpret_cast<const uint8_t*>(processInfo.PebBaseAddress) + kPebImageBaseOffset;
+
+    void* pImageBase = nullptr;
+    SIZE_T bytesRead = 0;
+    if (!ReadProcessMemory(aProcess, imageBaseField, &pImageBase, sizeof(pImageBase), &bytesRead) || bytesRead != sizeof(pImageBase))
+        return nullptr;
+
+    return pImageBase;
+}
+
+bool WriteRemoteExecutable(HANDLE aProcess, void* apAddress, const void* apData, size_t aSize)
+{
+    DWORD oldProtection = 0;
+    if (!VirtualProtectEx(aProcess, apAddress, aSize, PAGE_EXECUTE_READWRITE, &oldProtection))
+        return false;
+
+    SIZE_T bytesWritten = 0;
+    const bool writeSucceeded = WriteProcessMemory(aProcess, apAddress, apData, aSize, &bytesWritten) != FALSE && bytesWritten == aSize;
+    const bool flushSucceeded = writeSucceeded && FlushInstructionCache(aProcess, apAddress, aSize) != FALSE;
+
+    DWORD ignoredProtection = 0;
+    const bool restoreSucceeded = VirtualProtectEx(aProcess, apAddress, aSize, oldProtection, &ignoredProtection) != FALSE;
+
+    return writeSucceeded && flushSucceeded && restoreSucceeded;
+}
 } // namespace
 
 ExternalProcessLauncher::~ExternalProcessLauncher()
@@ -115,6 +168,96 @@ bool ExternalProcessLauncher::InjectClient(const std::filesystem::path& acPayloa
     return true;
 }
 
+bool ExternalProcessLauncher::PrepareCegImage(const std::filesystem::path& acExePath)
+{
+    auto content = TiltedPhoques::LoadFile(acExePath);
+    if (content.empty())
+    {
+        spdlog::error("[launch] failed to read executable for Steam CEG preparation");
+        return false;
+    }
+
+    steam::CEGImageInfo cegInfo{};
+    const auto cegResult = steam::DecryptCEGInPlace(reinterpret_cast<uint8_t*>(content.data()), content.size(), cegInfo);
+
+    if (cegResult == steam::CEGDecryptResult::kNotProtected)
+    {
+        spdlog::info("[launch] executable is not protected by Steam CEG");
+        return true;
+    }
+
+    if (cegResult != steam::CEGDecryptResult::kDecrypted)
+    {
+        spdlog::error("[launch] unsupported or invalid Steam CEG image - refusing to patch encrypted game code");
+        return false;
+    }
+
+    void* pRemoteImageBase = GetRemoteImageBase(m_process);
+    if (!pRemoteImageBase)
+    {
+        spdlog::error("[launch] could not resolve remote image base");
+        return false;
+    }
+
+    const uintptr_t remoteImageBase = reinterpret_cast<uintptr_t>(pRemoteImageBase);
+    if (remoteImageBase != cegInfo.preferredImageBase)
+    {
+        // Copiar o .text descriptografado por cima de uma imagem relocada
+        // reintroduziria endereços absolutos sem relocação. Um processo novo
+        // normalmente recebe a base preferida; se isso mudar, falhamos antes de
+        // corromper código e produzir um crash aparentemente aleatório.
+        spdlog::error("[launch] CEG image loaded at unexpected base 0x{:x} (expected 0x{:x})", remoteImageBase, cegInfo.preferredImageBase);
+        return false;
+    }
+
+    const uintptr_t remoteTextAddress = remoteImageBase + cegInfo.textRva;
+    const auto* pDecryptedText = reinterpret_cast<const uint8_t*>(content.data()) + cegInfo.textFileOffset;
+
+    spdlog::info("[launch] Steam CEG detected - restoring {} decrypted bytes at 0x{:x}", cegInfo.textSize, remoteTextAddress);
+
+    if (!WriteRemoteExecutable(m_process, reinterpret_cast<void*>(remoteTextAddress), pDecryptedText, cegInfo.textSize))
+    {
+        spdlog::error("[launch] failed to install decrypted Steam CEG text: {}", GetLastError());
+        return false;
+    }
+
+    // O thread suspenso já recebeu o entry point protegido do loader. Em vez de
+    // depender do layout interno do CONTEXT/RtlUserThreadStart, substituímos
+    // somente o início do stub por um JMP relativo ao entry point original.
+    const uintptr_t protectedEntryPoint = remoteImageBase + cegInfo.protectedEntryPointRva;
+    const uintptr_t originalEntryPoint = remoteImageBase + cegInfo.originalEntryPointRva;
+    const int64_t displacement64 = static_cast<int64_t>(originalEntryPoint) - static_cast<int64_t>(protectedEntryPoint + 5);
+    if (displacement64 < std::numeric_limits<int32_t>::min() || displacement64 > std::numeric_limits<int32_t>::max())
+    {
+        spdlog::error("[launch] Steam CEG entry point is out of range");
+        return false;
+    }
+
+    std::array<uint8_t, 5> jump{0xE9, 0, 0, 0, 0};
+    const int32_t displacement = static_cast<int32_t>(displacement64);
+    std::memcpy(jump.data() + 1, &displacement, sizeof(displacement));
+
+    if (!WriteRemoteExecutable(m_process, reinterpret_cast<void*>(protectedEntryPoint), jump.data(), jump.size()))
+    {
+        spdlog::error("[launch] failed to bypass Steam CEG stub: {}", GetLastError());
+        return false;
+    }
+
+    // Verificação independente da API de escrita: não liberamos o jogo se o
+    // Wine reportar sucesso mas o conteúdo remoto não corresponder ao decriptado.
+    std::array<uint8_t, 16> remoteText{};
+    SIZE_T bytesRead = 0;
+    if (!ReadProcessMemory(m_process, reinterpret_cast<const void*>(remoteTextAddress), remoteText.data(), remoteText.size(), &bytesRead) || bytesRead != remoteText.size() ||
+        std::memcmp(remoteText.data(), pDecryptedText, remoteText.size()) != 0)
+    {
+        spdlog::error("[launch] Steam CEG text verification failed");
+        return false;
+    }
+
+    spdlog::info("[launch] Steam CEG prepared - protected EP 0x{:x} now enters original EP 0x{:x}", protectedEntryPoint, originalEntryPoint);
+    return true;
+}
+
 bool ExternalProcessLauncher::Prepare(const LaunchRequest& acRequest)
 {
     const auto payloadPath = TiltedPhoques::GetPath() / kClientPayloadName;
@@ -158,20 +301,9 @@ bool ExternalProcessLauncher::Prepare(const LaunchRequest& acRequest)
     const std::wstring workingDir = acRequest.gamePath.wstring();
     std::wstring commandLine = L"\"" + acRequest.exePath.wstring() + L"\"";
 
-    // CreateProcess normal: é o loader do Wine que mapeia a imagem, que é
-    // exatamente o ponto — ele popula as unwind tables que o auto-mapeamento não
-    // consegue registrar.
-    if (!CreateProcessW(
-            acRequest.exePath.c_str(),
-            commandLine.data(),
-            nullptr,
-            nullptr,
-            FALSE,
-            CREATE_SUSPENDED,
-            nullptr,
-            workingDir.c_str(),
-            &startupInfo,
-            &processInfo))
+    // O loader do Wine mapeia a imagem e registra unwind/TLS/imports. O Steam CEG
+    // ainda é tratado abaixo, antes de qualquer hook tocar no .text.
+    if (!CreateProcessW(acRequest.exePath.c_str(), commandLine.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, workingDir.c_str(), &startupInfo, &processInfo))
     {
         spdlog::error("[launch] CreateProcessW failed: {}", GetLastError());
         Die(L"Failed to start the game process.");
@@ -182,6 +314,14 @@ bool ExternalProcessLauncher::Prepare(const LaunchRequest& acRequest)
     m_mainThread = processInfo.hThread;
 
     spdlog::info("[launch] game process created suspended (pid={})", processInfo.dwProcessId);
+
+    if (!PrepareCegImage(acRequest.exePath))
+    {
+        TerminateProcess(m_process, 1);
+        Cleanup();
+        Die(L"Failed to prepare the Steam-protected game image safely.");
+        return false;
+    }
 
     // A injeção acontece com a thread principal ainda suspensa: é a janela que o
     // SKSE usa, antes de qualquer código do jogo rodar.
