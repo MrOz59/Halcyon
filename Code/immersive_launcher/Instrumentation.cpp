@@ -91,10 +91,13 @@ void SetupLogging(const Options& aOptions)
     auto logger = std::make_shared<spdlog::logger>("launcher", sinks_init_list{consoleSink, fileSink});
     logger->set_pattern("%^[%Y-%m-%d %H:%M:%S.%e] [%l] [tid %t] %$ %v");
     logger->set_level(level);
-    logger->flush_on(level::warn);
+    // Flush em cada mensagem: sob Proton/Wine o launcher pode crashar durante o
+    // boot, e um flush a cada 2s engoliria justamente as últimas linhas — que são
+    // as que apontam onde ele morreu. Prioriza diagnóstico sobre throughput.
+    logger->flush_on(level::trace);
 
     set_default_logger(logger);
-    flush_every(std::chrono::seconds(2));
+    flush_every(std::chrono::seconds(1));
 
     spdlog::debug("Logging initialized (level={}, verbose={}, debug={})", to_string_view(level), aOptions.verbose, aOptions.debug);
 }

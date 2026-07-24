@@ -132,13 +132,24 @@ int StartUp(int argc, char** argv)
 
     spdlog::info("Program mapped, running init and entering game.");
 
+    spdlog::info("[boot] calling InstallStartHook()");
+    spdlog::default_logger()->flush();
     InstallStartHook();
+
     // Initialize all hooks before calling game init
     // TiltedPhoques::Initializer::RunAll();
+    spdlog::info("[boot] calling RunTiltedInit()");
+    spdlog::default_logger()->flush();
     RunTiltedInit(LC->gamePath, LC->Version);
+
+    spdlog::info("[boot] RunTiltedInit() returned; jumping into game entry point (gameMain)");
+    spdlog::default_logger()->flush();
 
     // This shouldn't return until the game is killed
     LC->gameMain();
+
+    spdlog::info("[boot] gameMain() returned (game exited)");
+    spdlog::default_logger()->flush();
     return 0;
 }
 
