@@ -8,7 +8,7 @@
 
 #include <World.h>
 
-#include <cstdio>
+#include "LinuxDiag.h"
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/rotating_file_sink.h>
@@ -53,52 +53,24 @@ void* TiltedOnlineApp::GetMainAddress() const
     return winMain.GetPtr();
 }
 
-// Diagnóstico do port Linux: log síncrono (WriteFile + FlushFileBuffers) que
-// sobrevive a um crash imediato do processo, ao contrário do spdlog em buffer.
-// Grava ao lado da DLL do client. Remover quando o crash 0x80000003 na init do
-// jogo estiver resolvido.
-static void DiagStep(const char* apStep)
-{
-    static HANDLE s_hFile = INVALID_HANDLE_VALUE;
-    if (s_hFile == INVALID_HANDLE_VALUE)
-    {
-        wchar_t modulePath[MAX_PATH]{};
-        GetModuleFileNameW(GetModuleHandleW(L"STClientPayload.dll"), modulePath, MAX_PATH);
-        std::filesystem::path p = modulePath[0] ? std::filesystem::path(modulePath).parent_path() : std::filesystem::current_path();
-        const auto logPath = (p / "st_beginmain_diag.log").wstring();
-        s_hFile = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    }
-    if (s_hFile == INVALID_HANDLE_VALUE)
-        return;
-
-    char line[256];
-    const int n = _snprintf_s(line, _TRUNCATE, "[beginmain] %s\r\n", apStep);
-    DWORD written = 0;
-    WriteFile(s_hFile, line, static_cast<DWORD>(n), &written, nullptr);
-    FlushFileBuffers(s_hFile);
-}
-
 bool TiltedOnlineApp::BeginMain()
 {
-    DiagStep("enter");
+    // BeginMain completa OK sob Proton; o crash 0x80000003 é ~5s depois, no loop
+    // de jogo (ver LinuxDiag / SkyrimVM64). Instrumentação mantida enquanto o
+    // diagnóstico continua.
+    LinuxDiagStep("BeginMain enter");
 
     World::Create();
-    DiagStep("World::Create done");
-
     World::Get().ctx().at<DiscordService>().Init();
-    DiagStep("DiscordService::Init done");
-
     World::Get().ctx().emplace<RenderSystemD3D11>(World::Get().ctx().at<OverlayService>(), World::Get().ctx().at<ImguiService>());
-    DiagStep("RenderSystemD3D11 done");
 
     LoadScriptExender();
-    DiagStep("LoadScriptExender done");
 
     // TODO: Figure out a way to un-blacklist NvCamera64.dll (see DllBlocklist.cpp). Then this hack can be removed
     if (IsNvidiaOverlayLoaded())
         ApplyNvidiaFix();
 
-    DiagStep("BeginMain complete");
+    LinuxDiagStep("BeginMain complete");
     return true;
 }
 

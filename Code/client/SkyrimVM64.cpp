@@ -1,9 +1,12 @@
 #include <TiltedOnlinePCH.h>
 #include "TiltedOnlineApp.h"
+#include "LinuxDiag.h"
 
 extern std::unique_ptr<TiltedOnlineApp> g_appInstance;
 
 #include <GameVM.h>
+
+#include <cstdio>
 
 struct Main;
 struct VMContext
@@ -22,10 +25,38 @@ static TVMDestructor* VMDestructor = nullptr;
 
 int TP_MAKE_THISCALL(HookVMUpdate, VMContext, float a2)
 {
+    // Diagnóstico: registra a primeira passagem e o estado do trampolim de detour
+    // (VMUpdate). Se MH_CreateHook falhou silenciosamente sob Wine, VMUpdate fica
+    // inválido e o ThisCall abaixo salta para lixo — hipótese para o 0x80000003.
+    static bool s_firstUpdate = true;
+    if (s_firstUpdate)
+    {
+        s_firstUpdate = false;
+        char buf[128];
+        _snprintf_s(buf, _TRUNCATE, "HookVMUpdate first call, VMUpdate detour=0x%llx", reinterpret_cast<unsigned long long>(VMUpdate));
+        LinuxDiagStep(buf);
+    }
+
     if (apThis->inactive == 0)
         g_appInstance->Update();
 
-    return TiltedPhoques::ThisCall(VMUpdate, apThis, a2);
+    static bool s_firstThisCall = true;
+    if (s_firstThisCall)
+    {
+        s_firstThisCall = false;
+        LinuxDiagStep("HookVMUpdate: Update() returned, calling original VMUpdate");
+    }
+
+    const auto result = TiltedPhoques::ThisCall(VMUpdate, apThis, a2);
+
+    static bool s_firstDone = true;
+    if (s_firstDone)
+    {
+        s_firstDone = false;
+        LinuxDiagStep("HookVMUpdate: original VMUpdate returned OK");
+    }
+
+    return result;
 }
 
 short TP_MAKE_THISCALL(HookMainLoop, Main)
