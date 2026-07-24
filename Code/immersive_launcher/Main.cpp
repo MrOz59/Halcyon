@@ -7,8 +7,10 @@
 
 #include "utils/ComUtils.h"
 #include "script_extender/SEMemoryBlock.h"
+#include "Instrumentation.h"
 
 #include <TiltedCore/Platform.hpp>
+#include <spdlog/spdlog.h>
 
 extern void CoreStubsInit();
 
@@ -44,6 +46,13 @@ static void PreloadSystemDlls()
 int main(int argc, char** argv)
 {
     Base::SetCurrentThreadName("MainLauncherThread");
+
+    // Fase 1 (instrumentação): resolve as flags de diagnóstico e configura o
+    // logging antes de qualquer outra coisa, para que todo o fluxo de boot seja
+    // registrado. Não interfere no caminho Windows existente.
+    const auto diagOptions = launcher::instrumentation::ParseOptions(argc, argv);
+    launcher::instrumentation::SetupLogging(diagOptions);
+    spdlog::info("SkyrimTogether launcher starting ({} args)", argc);
 
     // memory block for Script Extender reserved as early as we can
     script_extender::SEMemoryBlock b;

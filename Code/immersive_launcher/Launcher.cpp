@@ -16,6 +16,9 @@
 
 #include "base/dialogues/win/TaskDialog.h"
 #include "utils/Registry.h"
+#include "Instrumentation.h"
+
+#include <spdlog/spdlog.h>
 
 #include <BranchInfo.h>
 
@@ -105,12 +108,29 @@ int StartUp(int argc, char** argv)
     if (!oobe::SelectInstall(askSelect))
         DIE_NOW(L"Failed to select game install.");
 
+    spdlog::info("Game install selected: {}", LC->gamePath.string());
+
     // Bind path environment.
     loader::InstallPathRouting(LC->gamePath);
     steam::Load(LC->gamePath);
 
     if (!LoadProgram(*LC))
         return 3;
+
+    // Fase 1 (instrumentação): com os caminhos e a versão já resolvidos, imprime
+    // a configuração. Com --dump-config, encerra aqui sem iniciar o jogo.
+    {
+        const auto diagOptions = instrumentation::ParseOptions(argc, argv);
+        const auto toStr = [](const std::filesystem::path& p) { return TiltedPhoques::String(p.string()); };
+        instrumentation::DumpConfig(diagOptions, toStr(LC->exePath), toStr(LC->gamePath), LC->Version);
+        if (diagOptions.dumpConfig)
+        {
+            spdlog::info("--dump-config specified; exiting before game start.");
+            return 0;
+        }
+    }
+
+    spdlog::info("Program mapped, running init and entering game.");
 
     InstallStartHook();
     // Initialize all hooks before calling game init
