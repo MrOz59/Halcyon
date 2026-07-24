@@ -123,7 +123,14 @@ static TiltedPhoques::Initializer s_s(
     {
         // pray that this doesnt fail!
         VersionDbPtr<uint8_t> ProcessHook(82082);
-        TiltedPhoques::SwapCall(ProcessHook.Get() + 0x682, UI_AddToActiveQueue, &UI_AddToActiveQueue_Hook);
+        const auto hookRelay = CreateRel32Relay(&UI_AddToActiveQueue_Hook);
+        if (!hookRelay)
+        {
+            spdlog::critical("Failed to create rel32 relay for UI queue hook");
+            return;
+        }
+
+        TiltedPhoques::SwapCall(ProcessHook.Get() + 0x682, UI_AddToActiveQueue, hookRelay);
 
         // Ignore startup movie
         // TODO: Move me later.

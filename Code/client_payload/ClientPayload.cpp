@@ -110,7 +110,7 @@ DWORD WINAPI InitThread(LPVOID)
 
     if (!InitializePayloadSupport(gamePath, exeVersion))
     {
-        spdlog::critical("[payload] invalid module placement or failed to reserve RIP-relative stub memory");
+        spdlog::critical("[payload] failed to reserve RIP-relative stub memory");
         SignalInitDone();
         return 1;
     }

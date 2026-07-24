@@ -9,6 +9,8 @@
 #include <windows.h>
 #include <intrin.h>
 #include <cstdint>
+#include <cstring>
+#include <type_traits>
 
 // TiltedCore
 #include <TiltedCore/StackAllocator.hpp>
@@ -33,6 +35,36 @@
 
 extern void* RipAllocateN(size_t blockLength);
 #define REVERSE_ALLOC_STUB(x) RipAllocateN(x)
+
+// CALL/JMP rel32 só alcança ±2 GiB. O launcher in-process ficava naturalmente
+// perto do jogo, mas uma DLL carregada pelo Wine pode estar em qualquer região
+// do espaço de endereços. Este relay vive no pool reservado perto do Skyrim e
+// salta para o destino final por um endereço absoluto, tornando o hook
+// independente da base do módulo que contém a função.
+inline void* CreateRel32Relay(const uintptr_t aDestination)
+{
+    constexpr size_t kRelaySize = 14;
+    auto* pRelay = static_cast<uint8_t*>(RipAllocateN(kRelaySize));
+    if (!pRelay)
+        return nullptr;
+
+    // jmp qword ptr [rip+0]
+    static constexpr uint8_t kAbsoluteJump[6]{0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};
+    std::memcpy(pRelay, kAbsoluteJump, sizeof(kAbsoluteJump));
+    std::memcpy(pRelay + sizeof(kAbsoluteJump), &aDestination, sizeof(aDestination));
+
+    if (!FlushInstructionCache(GetCurrentProcess(), pRelay, kRelaySize))
+        return nullptr;
+
+    return pRelay;
+}
+
+template <class T> T CreateRel32Relay(T apDestination)
+{
+    static_assert(std::is_pointer_v<T>);
+    return reinterpret_cast<T>(CreateRel32Relay(reinterpret_cast<uintptr_t>(apDestination)));
+}
+
 #include <JitAssembly.hpp>
 
 #define SPDLOG_WCHAR_FILENAMES

@@ -55,9 +55,9 @@ uint8_t* TryAllocateRipPool(const uintptr_t aAddress)
     return static_cast<uint8_t*>(VirtualAlloc(reinterpret_cast<void*>(aAddress), kRipPoolSize, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
 }
 
-bool GetModuleRange(HMODULE aModule, uint8_t*& apModule, size_t& aSize)
+bool GetMainModuleRange(uint8_t*& apModule, size_t& aSize)
 {
-    apModule = reinterpret_cast<uint8_t*>(aModule);
+    apModule = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
     if (!apModule)
         return false;
 
@@ -71,44 +71,6 @@ bool GetModuleRange(HMODULE aModule, uint8_t*& apModule, size_t& aSize)
 
     aSize = ntHeaders->OptionalHeader.SizeOfImage;
     return aSize != 0;
-}
-
-bool GetMainModuleRange(uint8_t*& apModule, size_t& aSize)
-{
-    return GetModuleRange(GetModuleHandleW(nullptr), apModule, aSize);
-}
-
-bool IsPayloadRel32Reachable()
-{
-    uint8_t* pGameModule = nullptr;
-    size_t gameModuleSize = 0;
-    uint8_t* pPayloadModule = nullptr;
-    size_t payloadModuleSize = 0;
-
-    if (!GetMainModuleRange(pGameModule, gameModuleSize) || !GetModuleRange(GetModuleHandleW(L"STClientPayload.dll"), pPayloadModule, payloadModuleSize))
-    {
-        return false;
-    }
-
-    const uintptr_t gameBase = reinterpret_cast<uintptr_t>(pGameModule);
-    const uintptr_t payloadBase = reinterpret_cast<uintptr_t>(pPayloadModule);
-    if (gameBase > std::numeric_limits<uintptr_t>::max() - (gameModuleSize - 1) || payloadBase > std::numeric_limits<uintptr_t>::max() - (payloadModuleSize - 1))
-    {
-        return false;
-    }
-
-    const uintptr_t gameEnd = gameBase + gameModuleSize - 1;
-    const uintptr_t payloadEnd = payloadBase + payloadModuleSize - 1;
-    if (gameEnd > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max() - 5) || payloadEnd > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max()) ||
-        gameBase > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max() - 5) || payloadBase > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max()))
-    {
-        return false;
-    }
-
-    const int64_t minimumDisplacement = static_cast<int64_t>(payloadBase) - static_cast<int64_t>(gameEnd + 5);
-    const int64_t maximumDisplacement = static_cast<int64_t>(payloadEnd) - static_cast<int64_t>(gameBase + 5);
-
-    return minimumDisplacement >= std::numeric_limits<int32_t>::min() && maximumDisplacement <= std::numeric_limits<int32_t>::max();
 }
 
 bool RestoreGameCodeProtections()
@@ -197,12 +159,6 @@ bool LaunchContext::GetLoaded()
 
 bool InitializePayloadSupport(const std::filesystem::path& acGamePath, const TiltedPhoques::String& acExeVersion)
 {
-    // SwapCall/Jump ainda escrevem CALL/JMP rel32 diretamente no .text do jogo.
-    // Nunca deixe os inicializadores rodarem se a DLL estiver fora do alcance:
-    // o wrap de 32 bits só se manifesta depois, no primeiro hook executado.
-    if (!IsPayloadRel32Reachable())
-        return false;
-
     g_payloadContext.gamePath = acGamePath;
     g_payloadContext.Version = acExeVersion;
 

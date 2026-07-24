@@ -87,32 +87,6 @@ bool WriteRemoteExecutable(HANDLE aProcess, void* apAddress, const void* apData,
     return writeSucceeded && flushSucceeded && restoreSucceeded;
 }
 
-bool GetRemoteImageRange(HANDLE aProcess, uintptr_t& aBase, size_t& aSize)
-{
-    const auto pImageBase = static_cast<uint8_t*>(GetRemoteImageBase(aProcess));
-    if (!pImageBase)
-        return false;
-
-    IMAGE_DOS_HEADER dosHeader{};
-    SIZE_T bytesRead = 0;
-    if (!ReadProcessMemory(aProcess, pImageBase, &dosHeader, sizeof(dosHeader), &bytesRead) || bytesRead != sizeof(dosHeader) || dosHeader.e_magic != IMAGE_DOS_SIGNATURE ||
-        dosHeader.e_lfanew < 0)
-    {
-        return false;
-    }
-
-    IMAGE_NT_HEADERS64 ntHeaders{};
-    if (!ReadProcessMemory(aProcess, pImageBase + dosHeader.e_lfanew, &ntHeaders, sizeof(ntHeaders), &bytesRead) || bytesRead != sizeof(ntHeaders) ||
-        ntHeaders.Signature != IMAGE_NT_SIGNATURE || ntHeaders.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC || ntHeaders.OptionalHeader.SizeOfImage == 0)
-    {
-        return false;
-    }
-
-    aBase = reinterpret_cast<uintptr_t>(pImageBase);
-    aSize = ntHeaders.OptionalHeader.SizeOfImage;
-    return true;
-}
-
 bool FindRemoteModule(HANDLE aProcess, const std::filesystem::path& acModulePath, uintptr_t& aBase, size_t& aSize)
 {
     const DWORD processId = GetProcessId(aProcess);
@@ -144,30 +118,6 @@ bool FindRemoteModule(HANDLE aProcess, const std::filesystem::path& acModulePath
 
     CloseHandle(snapshot);
     return found;
-}
-
-bool IsPayloadRel32Reachable(uintptr_t aGameBase, size_t aGameSize, uintptr_t aPayloadBase, size_t aPayloadSize)
-{
-    if (aGameSize == 0 || aPayloadSize == 0 || aGameBase > std::numeric_limits<uintptr_t>::max() - (aGameSize - 1) ||
-        aPayloadBase > std::numeric_limits<uintptr_t>::max() - (aPayloadSize - 1))
-    {
-        return false;
-    }
-
-    const uintptr_t gameEnd = aGameBase + aGameSize - 1;
-    const uintptr_t payloadEnd = aPayloadBase + aPayloadSize - 1;
-    if (gameEnd > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max() - 5) || payloadEnd > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max()) ||
-        aGameBase > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max() - 5) || aPayloadBase > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max()))
-    {
-        return false;
-    }
-
-    // Valida os extremos: se ambos cabem, qualquer CALL/JMP entre uma posição no
-    // .text do jogo e uma função do payload também cabe em um rel32 assinado.
-    const int64_t minimumDisplacement = static_cast<int64_t>(aPayloadBase) - static_cast<int64_t>(gameEnd + 5);
-    const int64_t maximumDisplacement = static_cast<int64_t>(payloadEnd) - static_cast<int64_t>(aGameBase + 5);
-
-    return minimumDisplacement >= std::numeric_limits<int32_t>::min() && maximumDisplacement <= std::numeric_limits<int32_t>::max();
 }
 } // namespace
 
@@ -258,24 +208,11 @@ bool ExternalProcessLauncher::InjectClient(const std::filesystem::path& acPayloa
         return false;
     }
 
-    uintptr_t gameBase = 0;
-    size_t gameSize = 0;
-    if (!GetRemoteImageRange(m_process, gameBase, gameSize))
-    {
-        spdlog::error("[launch] could not resolve game image range after payload injection");
-        return false;
-    }
-
+    // O payload pode cair em qualquer região do espaço de endereços. Não há mais
+    // validação de alcance: os hooks rel32 do client saltam para um relay absoluto
+    // no pool RIP (perto do jogo), então a base da DLL é irrelevante.
     spdlog::info("[launch] client payload loaded at 0x{:x} (size=0x{:x})", payloadBase, payloadSize);
-
-    if (!IsPayloadRel32Reachable(gameBase, gameSize, payloadBase, payloadSize))
-    {
-        spdlog::error(
-            "[launch] payload is outside rel32 hook range: game=[0x{:x},0x{:x}), payload=[0x{:x},0x{:x})", gameBase, gameBase + gameSize, payloadBase, payloadBase + payloadSize);
-        return false;
-    }
-
-    spdlog::info("[launch] client payload placement validated for all rel32 hooks");
+    spdlog::info("[launch] payload placement accepted - direct rel32 hooks use near relays");
     return true;
 }
 

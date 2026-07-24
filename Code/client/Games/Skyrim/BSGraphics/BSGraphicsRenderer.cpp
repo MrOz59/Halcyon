@@ -93,7 +93,14 @@ static TiltedPhoques::Initializer s_viewportHooks(
         const VersionDbPtr<void> timerLoc(77246);
         const VersionDbPtr<void> renderInit(77226);
 
-        TiltedPhoques::SwapCall(mem::pointer(timerLoc.GetPtr()) + 9, StopTimer, &Hook_StopTimer);
+        const auto hookRelay = CreateRel32Relay(&Hook_StopTimer);
+        if (!hookRelay)
+        {
+            spdlog::critical("Failed to create rel32 relay for render timer hook");
+            return;
+        }
+
+        TiltedPhoques::SwapCall(mem::pointer(timerLoc.GetPtr()) + 9, StopTimer, hookRelay);
 
         Renderer_Init = static_cast<decltype(Renderer_Init)>(renderInit.GetPtr());
 

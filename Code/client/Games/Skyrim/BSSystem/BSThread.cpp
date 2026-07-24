@@ -81,7 +81,14 @@ static TiltedPhoques::Initializer s_BSThreadInit(
         TP_HOOK_IMMEDIATE(&BSThread_Initialize, &Hook_BSThread_Initialize);
 
         const VersionDbPtr<uint8_t> setThreadName(69066);
-        TiltedPhoques::Jump(setThreadName.Get(), &Hook_SetThreadName);
+        const auto hookRelay = CreateRel32Relay(&Hook_SetThreadName);
+        if (!hookRelay)
+        {
+            spdlog::critical("Failed to create rel32 relay for thread naming hook");
+            return;
+        }
+
+        TiltedPhoques::Jump(setThreadName.Get(), hookRelay);
 
 #if 0
     const VersionDbPtr<uint8_t> createHavokThread(57704);
