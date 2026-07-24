@@ -36,6 +36,39 @@ namespace launcher
 {
 static LaunchContext* g_context = nullptr;
 
+// Diagnóstico do port Linux: sob Wine/Proton o salto para o entry point do jogo
+// (auto-mapeado pelo ExeLoader) pode disparar uma exceção estrutural (SEH) que
+// mata o processo sem deixar rastro. Envolvemos a chamada num __try/__except
+// para capturar o código e o endereço da exceção — a pista que aponta a causa
+// raiz (ex.: falha de unwind da exception table sob o Wine mais recente).
+// Função separada e sem objetos com destrutor, como exige a mistura C++/SEH.
+static int FilterGameException(unsigned long aCode, void* apInfo)
+{
+    auto* pInfo = static_cast<EXCEPTION_POINTERS*>(apInfo);
+    void* faultAddr = pInfo && pInfo->ExceptionRecord ? pInfo->ExceptionRecord->ExceptionAddress : nullptr;
+    spdlog::critical("[boot] SEH exception in gameMain: code=0x{:08x} at address=0x{:x}", aCode, reinterpret_cast<uintptr_t>(faultAddr));
+    if (aCode == EXCEPTION_ACCESS_VIOLATION && pInfo && pInfo->ExceptionRecord && pInfo->ExceptionRecord->NumberParameters >= 2)
+    {
+        const auto op = pInfo->ExceptionRecord->ExceptionInformation[0];
+        const auto addr = pInfo->ExceptionRecord->ExceptionInformation[1];
+        spdlog::critical("[boot]   access violation {} address 0x{:x}", op == 0 ? "reading" : (op == 1 ? "writing" : "executing"), addr);
+    }
+    spdlog::default_logger()->flush();
+    // Deixa a exceção seguir para o handler/crash normal depois de logada.
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void RunGameMainGuarded(const LaunchContext& aLC)
+{
+    __try
+    {
+        aLC.gameMain();
+    }
+    __except (FilterGameException(GetExceptionCode(), GetExceptionInformation()))
+    {
+    }
+}
+
 LaunchContext* GetLaunchContext()
 {
 #if 0
@@ -146,7 +179,7 @@ int StartUp(int argc, char** argv)
     spdlog::default_logger()->flush();
 
     // This shouldn't return until the game is killed
-    LC->gameMain();
+    RunGameMainGuarded(*LC);
 
     spdlog::info("[boot] gameMain() returned (game exited)");
     spdlog::default_logger()->flush();

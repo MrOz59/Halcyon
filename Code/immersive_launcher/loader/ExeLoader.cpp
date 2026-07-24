@@ -12,6 +12,7 @@
 #define SPDLOG_WCHAR_FILENAMES
 #include <TiltedCore/Filesystem.hpp>
 #include <spdlog/formatter.h>
+#include <spdlog/spdlog.h>
 #include <winternl.h>
 
 #include "ExeLoader.h"
@@ -191,16 +192,25 @@ void ExeLoader::LoadExceptionTable(IMAGE_NT_HEADERS* apNtHeader)
     RUNTIME_FUNCTION* functionList = GetTargetRVA<RUNTIME_FUNCTION>(exceptionDirectory->VirtualAddress);
     DWORD entryCount = exceptionDirectory->Size / sizeof(RUNTIME_FUNCTION);
 
+    spdlog::info("[exeloader] RtlAddFunctionTable: {} entries @ 0x{:x}", entryCount, reinterpret_cast<uintptr_t>(functionList));
+    spdlog::default_logger()->flush();
+
     // has no use - inverted function tables get used instead from Ldr; we have no influence on those
     if (!RtlAddFunctionTable(functionList, entryCount, (DWORD64)GetModuleHandle(nullptr)))
     {
         Die(L"Setting exception handlers failed.", false);
     }
 
+    spdlog::info("[exeloader] RtlAddFunctionTable OK");
+    spdlog::default_logger()->flush();
+
     // replace the function table stored for debugger purposes (though we just added it above)
     {
         PLIST_ENTRY(NTAPI * rtlGetFunctionTableListHead)(VOID);
         rtlGetFunctionTableListHead = (decltype(rtlGetFunctionTableListHead))GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetFunctionTableListHead");
+
+        spdlog::info("[exeloader] RtlGetFunctionTableListHead {}", rtlGetFunctionTableListHead ? "found (patching debugger table)" : "NOT found (skipping - normal under Wine)");
+        spdlog::default_logger()->flush();
 
         if (rtlGetFunctionTableListHead)
         {
@@ -301,6 +311,9 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
     auto sourceTimestamp = sourceNtHeader->FileHeader.TimeDateStamp;
     auto sourceDebugDir = sourceNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
 
+    spdlog::info("[exeloader] entry point RVA=0x{:x}, mapped EP=0x{:x}", ntHeader->OptionalHeader.AddressOfEntryPoint, reinterpret_cast<uintptr_t>(m_pEntryPoint));
+    spdlog::info("[exeloader] LoadSections...");
+    spdlog::default_logger()->flush();
     LoadSections(ntHeader);
 
     // skse64_plugin_preloader (proxy d3dx9_42_dll and others?) may hook
@@ -311,10 +324,18 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
     VirtualProtect(sourceNtHeader, 0x1000, PAGE_EXECUTE_READWRITE, &oldProtect);
     sourceNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT] = ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
 
+    spdlog::info("[exeloader] LoadImports...");
+    spdlog::default_logger()->flush();
     LoadImports(ntHeader);
 #if defined(_M_AMD64)
+    spdlog::info("[exeloader] LoadExceptionTable...");
+    spdlog::default_logger()->flush();
     LoadExceptionTable(ntHeader);
+    spdlog::info("[exeloader] LoadTLS...");
+    spdlog::default_logger()->flush();
     LoadTLS(ntHeader, sourceNtHeader);
+    spdlog::info("[exeloader] exception table + TLS done");
+    spdlog::default_logger()->flush();
 #endif
 
     const size_t ntCompleteHeaderSize = sizeof(IMAGE_NT_HEADERS) + (ntHeader->FileHeader.NumberOfSections * (sizeof(IMAGE_SECTION_HEADER)));
