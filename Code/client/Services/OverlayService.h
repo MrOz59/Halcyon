@@ -1,6 +1,7 @@
 #pragma once
 
 #include <include/internal/cef_ptr.h>
+#include <include/cef_values.h>
 
 namespace TiltedPhoques
 {
@@ -59,6 +60,10 @@ struct OverlayService
     void SetVersion(const std::string& acVersion);
 
     OverlayApp* GetOverlayApp() const noexcept { return m_pOverlay.get(); }
+
+    // Envia um evento à UI do overlay, guardando o caso em que o overlay não
+    // existe (Wine/Proton: o CEF é pulado — ver OverlayService::Create).
+    void SendToOverlay(const std::string& acFunction, const CefRefPtr<CefListValue>& apArguments = nullptr) const noexcept;
 
     void SendSystemMessage(const std::string& acMessage);
 

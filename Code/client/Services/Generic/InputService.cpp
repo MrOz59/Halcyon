@@ -104,7 +104,8 @@ void SetUIActive(OverlayService& aOverlay, auto apRenderer, bool aActive)
 
     // Ensures the game is actually loaded, in case the initial event was sent too early
     aOverlay.SetVersion(BUILD_COMMIT);
-    aOverlay.GetOverlayApp()->ExecuteAsync("enterGame");
+    if (auto* pApp = aOverlay.GetOverlayApp()) // nulo sob Wine (CEF pulado)
+        pApp->ExecuteAsync("enterGame");
 
     apRenderer->SetCursorVisible(aActive);
 
