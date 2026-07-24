@@ -18,6 +18,8 @@
 
 #include <ChatMessageTypes.h>
 
+#include <DInputHook.hpp>
+
 #include <imgui.h>
 
 namespace
@@ -45,7 +47,32 @@ ImGuiOverlayService::~ImGuiOverlayService() noexcept = default;
 
 void ImGuiOverlayService::Toggle() noexcept
 {
-    m_visible = !m_visible;
+    SetVisible(!m_visible);
+}
+
+void ImGuiOverlayService::SetVisible(bool aVisible) noexcept
+{
+    // DInputHook intercepta a tecla de toggle antes do WndProc. Reconciliar o
+    // estado mesmo quando a visibilidade não mudou evita deixar teclado/mouse
+    // presos caso o toggle seja recebido fora do jogo ou durante um load.
+    TiltedPhoques::DInputHook::Get().SetEnabled(aVisible);
+
+    if (aVisible)
+    {
+        while (ShowCursor(TRUE) < 0)
+            ;
+    }
+    else
+    {
+        while (ShowCursor(FALSE) >= 0)
+            ;
+    }
+
+    if (m_visible == aVisible)
+        return;
+
+    m_visible = aVisible;
+    spdlog::info("[overlay] native ImGui UI {}", m_visible ? "opened" : "closed");
 }
 
 void ImGuiOverlayService::AddSystemMessage(const std::string& acText) noexcept

@@ -15,6 +15,7 @@
 #include <World.h>
 
 #include <Services/OverlayClient.h>
+#include <Services/ImGuiOverlayService.h>
 #include <Services/TransportService.h>
 
 #include <Messages/NotifyChatMessageBroadcast.h>
@@ -167,19 +168,19 @@ void OverlayService::Create(RenderSystemD3D11* apRenderSystem) noexcept
 
 void OverlayService::Render() noexcept
 {
-    if (!m_pOverlay)
-        return;
-
-    // Bombeia o loop do CEF (external_message_pump; ver OverlayApp::Initialize).
-    // Render roda todo frame, então é o ponto natural para tickar o Chromium.
-    m_pOverlay->Update();
-
     auto pPlayer = PlayerCharacter::Get();
     bool inGame = pPlayer && pPlayer->GetNiNode();
     if (inGame && !m_inGame)
         SetInGame(true);
     else if (!inGame && m_inGame)
         SetInGame(false);
+
+    if (!m_pOverlay)
+        return;
+
+    // Bombeia o loop do CEF (external_message_pump; ver OverlayApp::Initialize).
+    // Render roda todo frame, então é o ponto natural para tickar o Chromium.
+    m_pOverlay->Update();
 
     m_pOverlay->GetClient()->Render();
 }
@@ -241,6 +242,7 @@ void OverlayService::SetInGame(bool aInGame) noexcept
     if (m_inGame == aInGame)
         return;
     m_inGame = aInGame;
+    spdlog::info("[overlay] game state changed: {}", m_inGame ? "in game" : "out of game");
 
     if (m_inGame)
     {
@@ -249,6 +251,9 @@ void OverlayService::SetInGame(bool aInGame) noexcept
     }
     else
     {
+        if (auto* pImGuiOverlay = m_world.GetImGuiOverlayService())
+            pImGuiOverlay->SetVisible(false);
+
         SendToOverlay("exitGame");
         // TODO: this does nothing, since m_inGame is false
         SetActive(false);

@@ -1,6 +1,7 @@
 #include <TiltedOnlinePCH.h>
 
 #include <Services/InputService.h>
+#include <Services/ImGuiOverlayService.h>
 #include <Services/OverlayService.h>
 
 #include <OverlayApp.hpp>
@@ -177,24 +178,28 @@ void ProcessKeyboard(uint16_t aKey, uint16_t aScanCode, cef_key_event_type_t aTy
     auto& overlay = *s_pOverlay;
 
     // Sob Wine/Proton não há overlay CEF; a toggle key (F2) alterna o overlay
-    // ImGui nativo. Só no keyup, e só quando o jogador está no jogo. Ao alternar,
-    // liberamos/prendemos o cursor e o input do jogo como o SetUIActive fazia.
+    // ImGui nativo. DInput captura o teclado já no keydown, então sempre
+    // reconciliamos o estado quando a tecla chega fora do jogo para não deixar
+    // teclado/mouse presos.
     if (auto* pImGuiOverlay = World::Get().GetImGuiOverlayService())
     {
-        if (aType == KEYEVENT_KEYUP && IsToggleKey(aKey) && overlay.GetInGame())
-        {
-            pImGuiOverlay->Toggle();
-            const bool uiVisible = pImGuiOverlay->IsVisible();
+        const bool uiVisible = pImGuiOverlay->IsVisible();
+        const bool isToggle = IsToggleKey(aKey);
+        const bool isClose = IsDisableKey(aKey) && uiVisible;
 
-            // Com a UI aberta, desliga o input do jogo e mostra o cursor; ao
-            // fechar, faz o inverso.
-            TiltedPhoques::DInputHook::Get().SetEnabled(uiVisible);
-            if (uiVisible)
-                while (ShowCursor(TRUE) < 0)
-                    ;
-            else
-                while (ShowCursor(FALSE) >= 0)
-                    ;
+        if (aType != KEYEVENT_CHAR && (isToggle || isClose))
+        {
+            if (!overlay.GetInGame())
+            {
+                pImGuiOverlay->SetVisible(false);
+            }
+            else if (aType == KEYEVENT_KEYUP)
+            {
+                if (isToggle)
+                    pImGuiOverlay->Toggle();
+                else
+                    pImGuiOverlay->SetVisible(false);
+            }
         }
 
         return; // sem CEF: nada mais a rotear pelo caminho do browser
@@ -326,15 +331,49 @@ UINT GetRealACP()
 LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     // Sob Wine/Proton não há overlay CEF; quando o overlay ImGui está visível,
-    // encaminhamos os eventos de janela direto para o ImGui_ImplWin32 (senão os
-    // widgets não recebem teclado/mouse). O DebugService também usa esta rota.
+    // encaminhamos os eventos de janela direto para o ImGui_ImplWin32. Também
+    // precisamos continuar processando WM_INPUT: é por esse evento que o keyup
+    // do F2 chega depois que DInput captura o teclado.
     if (auto* pImGuiOverlay = World::Get().GetImGuiOverlayService())
     {
-        if (pImGuiOverlay->IsVisible())
-        {
-            auto& imgui = World::Get().ctx().at<ImguiService>();
+        const bool uiVisible = pImGuiOverlay->IsVisible();
+        auto& imgui = World::Get().ctx().at<ImguiService>();
+
+        if (uiVisible)
             imgui.WndProcHandler(hwnd, uMsg, wParam, lParam);
+
+        if (uMsg == WM_INPUT)
+        {
+            RAWINPUT input{};
+            UINT size = sizeof(input);
+            const UINT result = GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, &input, &size, sizeof(RAWINPUTHEADER));
+
+            if (result != static_cast<UINT>(-1))
+            {
+                if (uiVisible)
+                    imgui.RawInputHandler(input);
+
+                if (input.header.dwType == RIM_TYPEKEYBOARD)
+                {
+                    const auto keyboard = input.data.keyboard;
+                    ProcessKeyboard(
+                        keyboard.VKey, keyboard.MakeCode, keyboard.Flags & RI_KEY_BREAK ? KEYEVENT_KEYUP : KEYEVENT_KEYDOWN, keyboard.Flags & RI_KEY_E0,
+                        keyboard.Flags & RI_KEY_E1);
+                }
+            }
         }
+        else if (uMsg == WM_SETFOCUS && uiVisible)
+        {
+            // O Wine pode perder o registro de raw input ao trocar de janela.
+            // Reaplicar o estado restaura a captura apenas se a UI está aberta.
+            pImGuiOverlay->SetVisible(true);
+        }
+        else if (uMsg == WM_INPUTLANGCHANGE)
+        {
+            s_currentACP = GetRealACP();
+            spdlog::info("Input language changed, current ACP: {}", s_currentACP);
+        }
+
         return 0;
     }
 

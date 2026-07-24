@@ -38,6 +38,7 @@ public:
 
     // Alterna a visibilidade do overlay (dirigido pelo InputService, ex.: F2).
     void Toggle() noexcept;
+    void SetVisible(bool aVisible) noexcept;
     [[nodiscard]] bool IsVisible() const noexcept { return m_visible; }
 
 private:
