@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Loader/ExeLoader.h"
 #include <TiltedCore/Filesystem.hpp>
 #include <TiltedCore/Stl.hpp>
 
@@ -21,7 +20,6 @@ struct LaunchContext
     fs::path exePath;
     fs::path gamePath;
     TiltedPhoques::String Version;
-    ExeLoader::TEntryPoint gameMain = nullptr;
 
     void SetLoaded() { isLoaded = true; }   // If loaded, need to spoof GetModuleFileName*(nullptr)
     bool GetLoaded();
@@ -32,10 +30,7 @@ struct LaunchContext
 
 LaunchContext* GetLaunchContext();
 
-bool LoadProgram(LaunchContext&);
 int StartUp(int argc, char** argv);
-
-void InitClient();
 
 bool HandleArguments(int, char**, bool&);
 

@@ -6,6 +6,8 @@
 #include "loader/ExeLoader.h"
 #include "loader/PathRerouting.h"
 
+#include "launch/IGameLauncher.h"
+
 #include "Utils/Error.h"
 #include "Utils/FileVersion.inl"
 
@@ -22,10 +24,6 @@
 
 #include <BranchInfo.h>
 
-// These symbols are defined within the client code skyrimtogetherclient
-extern void InstallStartHook();
-extern void RunTiltedApp();
-extern void RunTiltedInit(const std::filesystem::path& acGamePath, const TiltedPhoques::String& aExeVersion);
 
 // Defined in EarlyLoad.dll
 bool __declspec(dllimport) EarlyInstallSucceeded();
@@ -35,39 +33,6 @@ HICON g_SharedWindowIcon = nullptr;
 namespace launcher
 {
 static LaunchContext* g_context = nullptr;
-
-// Diagnóstico do port Linux: sob Wine/Proton o salto para o entry point do jogo
-// (auto-mapeado pelo ExeLoader) pode disparar uma exceção estrutural (SEH) que
-// mata o processo sem deixar rastro. Envolvemos a chamada num __try/__except
-// para capturar o código e o endereço da exceção — a pista que aponta a causa
-// raiz (ex.: falha de unwind da exception table sob o Wine mais recente).
-// Função separada e sem objetos com destrutor, como exige a mistura C++/SEH.
-static int FilterGameException(unsigned long aCode, void* apInfo)
-{
-    auto* pInfo = static_cast<EXCEPTION_POINTERS*>(apInfo);
-    void* faultAddr = pInfo && pInfo->ExceptionRecord ? pInfo->ExceptionRecord->ExceptionAddress : nullptr;
-    spdlog::critical("[boot] SEH exception in gameMain: code=0x{:08x} at address=0x{:x}", aCode, reinterpret_cast<uintptr_t>(faultAddr));
-    if (aCode == EXCEPTION_ACCESS_VIOLATION && pInfo && pInfo->ExceptionRecord && pInfo->ExceptionRecord->NumberParameters >= 2)
-    {
-        const auto op = pInfo->ExceptionRecord->ExceptionInformation[0];
-        const auto addr = pInfo->ExceptionRecord->ExceptionInformation[1];
-        spdlog::critical("[boot]   access violation {} address 0x{:x}", op == 0 ? "reading" : (op == 1 ? "writing" : "executing"), addr);
-    }
-    spdlog::default_logger()->flush();
-    // Deixa a exceção seguir para o handler/crash normal depois de logada.
-    return EXCEPTION_CONTINUE_SEARCH;
-}
-
-static void RunGameMainGuarded(const LaunchContext& aLC)
-{
-    __try
-    {
-        aLC.gameMain();
-    }
-    __except (FilterGameException(GetExceptionCode(), GetExceptionInformation()))
-    {
-    }
-}
 
 LaunchContext* GetLaunchContext()
 {
@@ -147,8 +112,9 @@ int StartUp(int argc, char** argv)
     loader::InstallPathRouting(LC->gamePath);
     steam::Load(LC->gamePath);
 
-    if (!LoadProgram(*LC))
-        return 3;
+    LC->Version = QueryFileVersion(LC->exePath.c_str());
+    if (LC->Version.empty())
+        DIE_NOW(L"Failed to query game version");
 
     // Fase 1 (instrumentação): com os caminhos e a versão já resolvidos, imprime
     // a configuração. Com --dump-config, encerra aqui sem iniciar o jogo.
@@ -163,52 +129,37 @@ int StartUp(int argc, char** argv)
         }
     }
 
-    spdlog::info("Program mapped, running init and entering game.");
+    // Sob Wine/Proton o mapeamento manual de PE não é utilizável (as unwind tables
+    // do módulo auto-mapeado ficam invisíveis para o RtlVirtualUnwind2), então a
+    // estratégia padrão muda para processo externo. No Windows nada muda.
+    bool strategyOverridden = false;
+    const auto strategy = launch::ParseStrategyOverride(argc, argv, strategyOverridden);
 
-    spdlog::info("[boot] calling InstallStartHook()");
+    spdlog::info("[launch] strategy: {}{}", launch::ToString(strategy), strategyOverridden ? " (forced via --launch-mode)" : "");
+
+    auto gameLauncher = launch::CreateGameLauncher(strategy);
+
+    // No modo in-process o launcher passa a se comportar como o jogo perante o
+    // GetModuleFileName*(nullptr); no modo externo o jogo é um processo separado e
+    // essa fachada não se aplica.
+    if (strategy == launch::Strategy::kInProcess)
+        LC->SetLoaded();
+
+    const launch::LaunchRequest request{LC->exePath, LC->gamePath, LC->Version};
+
+    if (!gameLauncher->Prepare(request))
+        return 3;
+
+    spdlog::info("Program prepared, entering game.");
     spdlog::default_logger()->flush();
-    InstallStartHook();
 
-    // Initialize all hooks before calling game init
-    // TiltedPhoques::Initializer::RunAll();
-    spdlog::info("[boot] calling RunTiltedInit()");
-    spdlog::default_logger()->flush();
-    RunTiltedInit(LC->gamePath, LC->Version);
+    // Só retorna quando o jogo termina.
+    if (!gameLauncher->Run())
+        return 4;
 
-    spdlog::info("[boot] RunTiltedInit() returned; jumping into game entry point (gameMain)");
-    spdlog::default_logger()->flush();
-
-    // This shouldn't return until the game is killed
-    RunGameMainGuarded(*LC);
-
-    spdlog::info("[boot] gameMain() returned (game exited)");
+    spdlog::info("[boot] game exited (code {})", gameLauncher->GetExitCode());
     spdlog::default_logger()->flush();
     return 0;
-}
-
-bool LoadProgram(LaunchContext& LC)
-{
-    auto content = TiltedPhoques::LoadFile(LC.exePath);
-    if (content.empty())
-        DIE_NOW(L"Failed to mount game executable");
-
-    LC.Version = QueryFileVersion(LC.exePath.c_str());
-    if (LC.Version.empty())
-        DIE_NOW(L"Failed to query game version");
-    LC.SetLoaded();
-
-    ExeLoader loader(CurrentTarget.exeLoadSz);
-    if (!loader.Load(reinterpret_cast<uint8_t*>(content.data())))
-        DIE_NOW(L"Fatal error while mapping executable");
-
-    LC.gameMain = loader.GetEntryPoint();
-    return true;
-}
-
-void InitClient()
-{
-    // Jump into client code.
-    RunTiltedApp();
 }
 
 bool HandleArguments(int aArgc, char** aArgv, bool& aAskSelect)

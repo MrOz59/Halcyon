@@ -62,5 +62,8 @@ target("SkyrimImmersiveLauncher")
     set_basename("SkyrimTogether")
     add_defines("TARGET_PREFIX=\"st\"")
     add_deps("SkyrimTogetherClient")
+    -- O modo externo injeta esta DLL no processo do jogo; garante que ela seja
+    -- construída junto com o launcher.
+    add_deps("SkyrimTogetherClientPayload")
     add_ldflags("/WHOLEARCHIVE:SkyrimTogetherClient", { force = true })
     build_launcher()
