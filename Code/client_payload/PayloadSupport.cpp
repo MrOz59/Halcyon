@@ -2,6 +2,8 @@
 
 #include <Windows.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -19,11 +21,24 @@ namespace
 constexpr size_t kRipPoolSize = 0x100000;
 constexpr uintptr_t kRipSearchDistance = 0x70000000;
 constexpr size_t kStubAlignment = 16;
+constexpr size_t kMaxProtectedRegions = 64;
 
 launcher::LaunchContext g_payloadContext;
 uint8_t* g_ripPool = nullptr;
 size_t g_ripPoolOffset = 0;
 std::mutex g_ripPoolMutex;
+
+struct ProtectedRegion
+{
+    void* address = nullptr;
+    size_t size = 0;
+    DWORD protection = 0;
+};
+
+std::array<ProtectedRegion, kMaxProtectedRegions> g_protectedRegions;
+size_t g_protectedRegionCount = 0;
+uint8_t* g_mainModule = nullptr;
+size_t g_mainModuleSize = 0;
 
 uintptr_t AlignDown(const uintptr_t aValue, const uintptr_t aAlignment)
 {
@@ -40,18 +55,49 @@ uint8_t* TryAllocateRipPool(const uintptr_t aAddress)
     return static_cast<uint8_t*>(VirtualAlloc(reinterpret_cast<void*>(aAddress), kRipPoolSize, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
 }
 
+bool GetMainModuleRange(uint8_t*& apModule, size_t& aSize)
+{
+    apModule = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
+    if (!apModule)
+        return false;
+
+    const auto dosHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(apModule);
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+        return false;
+
+    const auto ntHeaders = reinterpret_cast<const IMAGE_NT_HEADERS*>(apModule + dosHeader->e_lfanew);
+    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE)
+        return false;
+
+    aSize = ntHeaders->OptionalHeader.SizeOfImage;
+    return aSize != 0;
+}
+
+bool RestoreGameCodeProtections()
+{
+    bool success = true;
+    for (size_t i = g_protectedRegionCount; i > 0; --i)
+    {
+        const auto& region = g_protectedRegions[i - 1];
+        DWORD ignored = 0;
+        if (!VirtualProtect(region.address, region.size, region.protection, &ignored))
+            success = false;
+    }
+
+    if (g_mainModule && g_mainModuleSize && !FlushInstructionCache(GetCurrentProcess(), g_mainModule, g_mainModuleSize))
+        success = false;
+
+    g_protectedRegionCount = 0;
+    g_mainModule = nullptr;
+    g_mainModuleSize = 0;
+    return success;
+}
+
 uint8_t* AllocateRipPool()
 {
-    const auto mainModule = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
-    if (!mainModule)
-        return nullptr;
-
-    const auto dosHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(mainModule);
-    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
-        return nullptr;
-
-    const auto ntHeaders = reinterpret_cast<const IMAGE_NT_HEADERS*>(mainModule + dosHeader->e_lfanew);
-    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE)
+    uint8_t* mainModule = nullptr;
+    size_t mainModuleSize = 0;
+    if (!GetMainModuleRange(mainModule, mainModuleSize))
         return nullptr;
 
     SYSTEM_INFO systemInfo{};
@@ -59,7 +105,7 @@ uint8_t* AllocateRipPool()
 
     const uintptr_t granularity = systemInfo.dwAllocationGranularity;
     const uintptr_t moduleStart = reinterpret_cast<uintptr_t>(mainModule);
-    const uintptr_t moduleEnd = moduleStart + ntHeaders->OptionalHeader.SizeOfImage;
+    const uintptr_t moduleEnd = moduleStart + mainModuleSize;
     if (moduleStart <= kRipPoolSize)
         return nullptr;
 
@@ -124,6 +170,73 @@ bool InitializePayloadSupport(const std::filesystem::path& acGamePath, const Til
     if (!g_ripPool)
         g_ripPool = AllocateRipPool();
     return g_ripPool != nullptr;
+}
+
+bool EnableGameCodePatching()
+{
+    if (g_protectedRegionCount != 0)
+        return false;
+
+    if (!GetMainModuleRange(g_mainModule, g_mainModuleSize))
+        return false;
+
+    const uintptr_t moduleStart = reinterpret_cast<uintptr_t>(g_mainModule);
+    const uintptr_t moduleEnd = moduleStart + g_mainModuleSize;
+
+    for (uintptr_t cursor = moduleStart; cursor < moduleEnd;)
+    {
+        MEMORY_BASIC_INFORMATION memoryInfo{};
+        if (VirtualQuery(reinterpret_cast<void*>(cursor), &memoryInfo, sizeof(memoryInfo)) != sizeof(memoryInfo))
+        {
+            RestoreGameCodeProtections();
+            return false;
+        }
+
+        const uintptr_t regionStart = (std::max)(cursor, reinterpret_cast<uintptr_t>(memoryInfo.BaseAddress));
+        const uintptr_t memoryRegionEnd = reinterpret_cast<uintptr_t>(memoryInfo.BaseAddress) + memoryInfo.RegionSize;
+        const uintptr_t regionEnd = (std::min)(moduleEnd, memoryRegionEnd);
+        if (regionEnd <= regionStart)
+        {
+            RestoreGameCodeProtections();
+            return false;
+        }
+
+        const DWORD baseProtection = memoryInfo.Protect & 0xFF;
+        const bool isReadOnlyExecutable = baseProtection == PAGE_EXECUTE || baseProtection == PAGE_EXECUTE_READ;
+        if (memoryInfo.State == MEM_COMMIT && isReadOnlyExecutable)
+        {
+            if (g_protectedRegionCount == g_protectedRegions.size())
+            {
+                RestoreGameCodeProtections();
+                return false;
+            }
+
+            DWORD oldProtection = 0;
+            const size_t regionSize = regionEnd - regionStart;
+            if (!VirtualProtect(reinterpret_cast<void*>(regionStart), regionSize, PAGE_EXECUTE_READWRITE, &oldProtection))
+            {
+                RestoreGameCodeProtections();
+                return false;
+            }
+
+            g_protectedRegions[g_protectedRegionCount++] = {reinterpret_cast<void*>(regionStart), regionSize, oldProtection};
+        }
+
+        cursor = regionEnd;
+    }
+
+    if (g_protectedRegionCount == 0)
+    {
+        RestoreGameCodeProtections();
+        return false;
+    }
+
+    return true;
+}
+
+bool DisableGameCodePatching()
+{
+    return RestoreGameCodeProtections();
 }
 
 // Deliberately in no namespace: TiltedOnlinePCH.h declares this symbol for the

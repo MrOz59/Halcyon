@@ -118,6 +118,18 @@ DWORD WINAPI InitThread(LPVOID)
     spdlog::info("[payload] game path   : {}", gamePath.string());
     spdlog::info("[payload] exe version : {}", exeVersion.c_str());
 
+    // O mapeador in-process deixava o código do jogo gravável. No processo
+    // externo, o loader do Windows/Wine aplica RX à seção .text; os helpers
+    // legados Put/Nop/SwapCall precisam de escrita temporária para instalar os
+    // patches antes de a thread principal do jogo ser retomada.
+    if (!EnableGameCodePatching())
+    {
+        spdlog::critical("[payload] failed to enable game code patching");
+        SignalInitDone();
+        return 1;
+    }
+    spdlog::info("[payload] game code patching enabled");
+
     // Mesma ordem do caminho in-process: o hook de startup primeiro, para que o
     // client seja ativado quando o CRT do jogo chamar GetStartupInfoW.
     spdlog::info("[payload] installing start hook");
@@ -125,6 +137,8 @@ DWORD WINAPI InitThread(LPVOID)
 
     spdlog::info("[payload] running client init");
     RunTiltedInit(gamePath, exeVersion);
+    if (!DisableGameCodePatching())
+        spdlog::warn("[payload] failed to restore one or more game code protections");
 
     spdlog::info("[payload] client init complete - releasing game");
     SignalInitDone();
