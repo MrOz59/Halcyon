@@ -65,6 +65,12 @@ already relocated all other sections. The launcher then writes the decrypted cod
 flushes the instruction cache, restores page protection, and verifies the remote
 bytes before patching the protected entry point.
 
+Wine can rewrite the mapped PE header's `OptionalHeader.ImageBase` from the preferred
+file value to the actual randomized address before applying relocations. Remote image
+validation therefore accepts either the preferred base or the exact PEB-resolved
+mapped base. It still requires matching PE signatures, AMD64 architecture, image
+size, and protected entry-point RVA, and logs every compared value on failure.
+
 For Skyrim SE `1.6.1170`, the relocation table contains no entries inside the main
 `.text` section, so a Proton 11 high-address load requires validation but no code
 fixups. Keeping the parser generic avoids reintroducing the fixed-base assumption for

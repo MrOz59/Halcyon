@@ -145,7 +145,10 @@ from its preferred `0x140000000` image base. The launcher therefore validates th
 remote PE headers obtained through the process PEB, applies supported base relocations
 that target the decrypted `.text` bytes, and only then restores and verifies that
 section. Relocations outside `.text` remain the responsibility of the Wine loader.
-Unknown image layouts or relocation types fail before the game is resumed.
+Wine may replace the in-memory PE header's preferred image base with the actual mapped
+address; the validator accepts either exact value while keeping the signature,
+architecture, image size, and protected entry point checks strict. Unknown image
+layouts or relocation types fail before the game is resumed.
 
 ### Interface and input
 

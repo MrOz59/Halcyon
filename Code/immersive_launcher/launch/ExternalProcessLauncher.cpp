@@ -91,27 +91,55 @@ bool ValidateRemoteGameImage(HANDLE aProcess, uintptr_t aImageBase, const steam:
 {
     IMAGE_DOS_HEADER dosHeader{};
     SIZE_T bytesRead = 0;
-    if (!ReadProcessMemory(aProcess, reinterpret_cast<const void*>(aImageBase), &dosHeader, sizeof(dosHeader), &bytesRead) || bytesRead != sizeof(dosHeader) ||
-        dosHeader.e_magic != IMAGE_DOS_SIGNATURE || dosHeader.e_lfanew < 0 || dosHeader.e_lfanew > 1024 * 1024)
+    if (!ReadProcessMemory(aProcess, reinterpret_cast<const void*>(aImageBase), &dosHeader, sizeof(dosHeader), &bytesRead) || bytesRead != sizeof(dosHeader))
     {
+        spdlog::error("[launch] failed to read remote DOS header at 0x{:x} (read={}, error={})", aImageBase, bytesRead, GetLastError());
+        return false;
+    }
+
+    if (dosHeader.e_magic != IMAGE_DOS_SIGNATURE || dosHeader.e_lfanew < 0 || dosHeader.e_lfanew > 1024 * 1024)
+    {
+        spdlog::error("[launch] invalid remote DOS header at 0x{:x} (magic=0x{:x}, nt_offset=0x{:x})", aImageBase, dosHeader.e_magic, dosHeader.e_lfanew);
         return false;
     }
 
     if (aImageBase > std::numeric_limits<uintptr_t>::max() - static_cast<uintptr_t>(dosHeader.e_lfanew))
+    {
+        spdlog::error("[launch] remote NT header address overflows the address space");
         return false;
+    }
 
     IMAGE_NT_HEADERS64 ntHeaders{};
     bytesRead = 0;
     const uintptr_t ntHeadersAddress = aImageBase + static_cast<uintptr_t>(dosHeader.e_lfanew);
     if (!ReadProcessMemory(aProcess, reinterpret_cast<const void*>(ntHeadersAddress), &ntHeaders, sizeof(ntHeaders), &bytesRead) || bytesRead != sizeof(ntHeaders))
     {
+        spdlog::error("[launch] failed to read remote NT headers at 0x{:x} (read={}, error={})", ntHeadersAddress, bytesRead, GetLastError());
         return false;
     }
 
-    return ntHeaders.Signature == IMAGE_NT_SIGNATURE && ntHeaders.FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64 && ntHeaders.FileHeader.NumberOfSections != 0 &&
-           ntHeaders.FileHeader.SizeOfOptionalHeader >= sizeof(IMAGE_OPTIONAL_HEADER64) && ntHeaders.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
-           ntHeaders.OptionalHeader.ImageBase == acInfo.preferredImageBase && ntHeaders.OptionalHeader.SizeOfImage == acInfo.imageSize &&
-           ntHeaders.OptionalHeader.AddressOfEntryPoint == acInfo.protectedEntryPointRva;
+    // Wine updates the in-memory OptionalHeader.ImageBase to the randomized map
+    // address before it applies relocations. Windows and older Wine versions may
+    // leave the preferred base from the file in place, so only those two exact
+    // values are valid here.
+    const bool imageBaseMatches = ntHeaders.OptionalHeader.ImageBase == acInfo.preferredImageBase || ntHeaders.OptionalHeader.ImageBase == aImageBase;
+    const bool headersMatch = ntHeaders.Signature == IMAGE_NT_SIGNATURE && ntHeaders.FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64 && ntHeaders.FileHeader.NumberOfSections != 0 &&
+                              ntHeaders.FileHeader.SizeOfOptionalHeader >= sizeof(IMAGE_OPTIONAL_HEADER64) && ntHeaders.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
+                              imageBaseMatches && ntHeaders.OptionalHeader.SizeOfImage == acInfo.imageSize &&
+                              ntHeaders.OptionalHeader.AddressOfEntryPoint == acInfo.protectedEntryPointRva;
+    if (!headersMatch)
+    {
+        spdlog::error(
+            "[launch] remote PE mismatch at 0x{:x}: signature=0x{:x}, machine=0x{:x}, sections={}, optional=0x{:x}, magic=0x{:x}, image_base=0x{:x} "
+            "(preferred=0x{:x}), image_size=0x{:x} (expected=0x{:x}), entry_rva=0x{:x} (expected=0x{:x})",
+            aImageBase, ntHeaders.Signature, ntHeaders.FileHeader.Machine, ntHeaders.FileHeader.NumberOfSections, ntHeaders.FileHeader.SizeOfOptionalHeader,
+            ntHeaders.OptionalHeader.Magic, ntHeaders.OptionalHeader.ImageBase, acInfo.preferredImageBase, ntHeaders.OptionalHeader.SizeOfImage, acInfo.imageSize,
+            ntHeaders.OptionalHeader.AddressOfEntryPoint, acInfo.protectedEntryPointRva);
+        return false;
+    }
+
+    spdlog::info("[launch] remote PE validated at 0x{:x} (header image base=0x{:x}, preferred=0x{:x})", aImageBase, ntHeaders.OptionalHeader.ImageBase, acInfo.preferredImageBase);
+    return true;
 }
 
 bool FindRemoteModule(HANDLE aProcess, const std::filesystem::path& acModulePath, uintptr_t& aBase, size_t& aSize)
