@@ -28,6 +28,25 @@ The native interface also implements party management, invitations, chat channel
 and a persistent party HUD through the existing vanilla protocol. These expanded UI
 flows should receive an in-game multiplayer pass in each new playable build.
 
+### Validated launch methods
+
+Runtime compatibility and the program used to start STR are separate concerns. The
+following combinations have been validated:
+
+| Launch method | Compatibility tool | Build | Result |
+| --- | --- | --- | --- |
+| Steam Non-Steam shortcut for `SkyrimTogether.exe` | Valve Proton 11.0 | `0954a161` | Game, UI, and vanilla server connection validated |
+| Steam Non-Steam shortcut for `SkyrimTogether.exe` | Proton-CachyOS Latest | `0954a161` | Game, UI, and vanilla server connection validated |
+| Steam Non-Steam shortcut for `SkyrimTogether.exe` | GE-Proton11-1 | `96dc3db2` | High-ASLR game image, UI, and vanilla server connection validated |
+| Vortex tool launch with the runtime-refresh fix | Proton-CachyOS Latest | `96dc3db2` | Game, UI, and vanilla server connection validated |
+| Vortex tool launch with the runtime-refresh fix | GE-Proton11-1 | `96dc3db2` | High-ASLR game image, UI, and vanilla server connection validated |
+
+GE-Proton11-1 previously failed on `0954a161` because it loaded the game at a
+randomized high address and Wine rewrote the mapped PE header's image base. The
+relocation-aware validation change in `96dc3db` fixed that failure. These results are
+specific to the versions tested; the names of custom compatibility tools and their
+Wine bases can change between releases.
+
 The client is **not a native Linux executable**. The launcher, game, and payload
 remain Windows PE binaries and run inside the same Proton prefix. The dedicated
 server already has a separate native Linux path in the upstream project.
@@ -52,18 +71,25 @@ server already has a separate native Linux path in the upstream project.
            └── SkyrimTogether.exe
    ```
 
-3. Enable `SkyrimTogether.esp` and use the same Proton prefix and version configured
-   for Skyrim.
-4. Register `Data/SkyrimTogetherReborn/SkyrimTogether.exe` as a tool in your mod
-   manager. Pass `--exePath` when the launcher cannot locate the game automatically,
-   for example:
+3. Enable `SkyrimTogether.esp`.
+4. In Steam, add
+   `Data/SkyrimTogetherReborn/SkyrimTogether.exe` as a **Non-Steam Game**. Open that
+   shortcut's **Properties > Compatibility**, force Valve Proton 11.0,
+   GE-Proton11-1, or the tested Proton-CachyOS release, and launch STR from this
+   shortcut.
+5. Pass `--exePath` in the Steam shortcut's launch options only when the launcher
+   cannot locate the game automatically, for example:
 
    ```text
    --exePath "Z:\path\to\SteamLibrary\steamapps\common\Skyrim Special Edition\SkyrimSE.exe"
    ```
 
-5. Start that tool from the environment that already applies Skyrim's Proton prefix.
-   Do not run the launcher in a different Wine prefix.
+Vortex can install, enable, deploy, and launch the mod when using the
+runtime-selection refresh implemented in the Linux fork. Vortex launches using both
+Proton-CachyOS and GE-Proton11-1 with Skyrim's `compatdata/489830/pfx` completed
+vanilla server connections. If the compatibility tool was just changed in Steam,
+wait for Steam to write `config/config.vdf` before starting the Vortex tool;
+otherwise Vortex may still read the previous selection.
 
 On the first Proton launch, a small native display picker offers:
 
@@ -187,6 +213,10 @@ is saved and applied without opening the picker. For network failures, search
 `tp_client.log` for the `connecting`, `Transport connected`, `authenticating`, and
 `disconnected` lines.
 
+A blank launcher console when STR is started from a Steam shortcut is not by itself
+an error. File logging remains active; use the files above as the authoritative
+startup record and add `--verbose` or `--debug` when more detail is required.
+
 Common errors:
 
 - `network_timeout`: the server is offline, its UDP port is blocked, or the route is
@@ -207,6 +237,8 @@ Common errors:
   guarantee that the server's UDP port is reachable.
 - The path has been validated with Skyrim SE `1.6.1170`; other versions require
   testing.
+- Vortex launch using Proton-CachyOS and GE-Proton11-1 has been validated with the
+  runtime-selection refresh in the Linux Vortex fork.
 - Proton versions, drivers, and mod managers differ across distributions, so the
   fork should still be considered experimental.
 

@@ -22,6 +22,7 @@ ImguiService::~ImguiService() noexcept
 void ImguiService::Create(RenderSystemD3D11* apRenderSystem, HWND aHwnd)
 {
     m_window = aHwnd;
+    m_windowFocused = GetForegroundWindow() == m_window;
     m_imDriver.Initialize(static_cast<void*>(aHwnd));
 
     // init platform
@@ -33,14 +34,22 @@ void ImguiService::Create(RenderSystemD3D11* apRenderSystem, HWND aHwnd)
 
 void ImguiService::Render() const
 {
-    // Skyrim may continuously recenter or hide the OS cursor while it owns the
-    // game camera. Keep the native overlay's virtual cursor authoritative before
-    // the Win32 backend samples it.
-    RestoreVirtualCursor();
+    if (m_cursorControlEnabled)
+        UpdateCursorClip();
 
     ImGui_ImplDX11_NewFrame();
 
     ImGui_ImplWin32_NewFrame();
+
+    // Skyrim and Wine may keep recentering the physical cursor while the game
+    // camera owns the window. Feed ImGui the raw-input-backed virtual position
+    // directly and draw its cursor in the overlay instead of fighting the game
+    // with SetCursorPos every frame.
+    ImGuiIO& io = ImGui::GetIO();
+    io.MouseDrawCursor = m_cursorControlEnabled;
+    if (m_cursorControlEnabled)
+        io.MousePos = ImVec2(static_cast<float>(m_virtualCursor.x), static_cast<float>(m_virtualCursor.y));
+
     ImGui::NewFrame();
 
     m_drawSignal.publish();
@@ -48,9 +57,8 @@ void ImguiService::Render() const
 
     if (m_cursorControlEnabled)
     {
-        // The game can replace the cursor after ImGui's backend last changed its
-        // shape. Refresh it every active frame instead of relying on a shape
-        // transition that may never occur.
+        // Keep the physical cursor hidden if Skyrim changed it during the frame.
+        // The visible pointer is part of ImGui's draw data.
         ImGui_ImplWin32_WndProcHandler(m_window, WM_SETCURSOR, 0, MAKELPARAM(HTCLIENT, WM_MOUSEMOVE));
     }
 
@@ -104,7 +112,6 @@ void ImguiService::RawInputHandler(RAWINPUT& aRawinput)
             }
 
             ClampVirtualCursor();
-            RestoreVirtualCursor();
         }
 
         if (mouse.usButtonFlags & RI_MOUSE_LEFT_BUTTON_DOWN)
@@ -144,8 +151,24 @@ void ImguiService::SetCursorControlEnabled(bool aEnabled) noexcept
     if (m_cursorControlEnabled == aEnabled)
         return;
 
+    if (aEnabled)
+        m_hasPreviousClipRect = GetClipCursor(&m_previousClipRect) != FALSE;
+
     m_cursorControlEnabled = aEnabled;
-    if (!m_cursorControlEnabled || !m_window)
+    if (ImGui::GetCurrentContext() != NULL)
+        ImGui::GetIO().MouseDrawCursor = m_cursorControlEnabled;
+
+    if (!m_cursorControlEnabled)
+    {
+        if (m_windowFocused && m_hasPreviousClipRect)
+            ClipCursor(&m_previousClipRect);
+        else
+            ClipCursor(nullptr);
+        m_hasPreviousClipRect = false;
+        return;
+    }
+
+    if (!m_window)
         return;
 
     POINT cursor{};
@@ -159,7 +182,13 @@ void ImguiService::SetCursorControlEnabled(bool aEnabled) noexcept
     }
 
     ClampVirtualCursor();
-    RestoreVirtualCursor();
+    UpdateCursorClip();
+}
+
+void ImguiService::OnWindowFocusChanged(bool aFocused) noexcept
+{
+    m_windowFocused = aFocused;
+    UpdateCursorClip();
 }
 
 void ImguiService::ClampVirtualCursor() noexcept
@@ -175,23 +204,28 @@ void ImguiService::ClampVirtualCursor() noexcept
     m_virtualCursor.y = std::clamp<LONG>(m_virtualCursor.y, client.top, std::max(client.top, client.bottom - 1));
 }
 
-void ImguiService::RestoreVirtualCursor() const noexcept
+void ImguiService::UpdateCursorClip() const noexcept
 {
-    if (!m_cursorControlEnabled || !m_window)
+    if (!m_cursorControlEnabled)
         return;
 
-    POINT target = m_virtualCursor;
-    if (ClientToScreen(m_window, &target))
+    if (!m_windowFocused || !m_window)
     {
-        POINT current{};
-        if (!GetCursorPos(&current) || current.x != target.x || current.y != target.y)
-            SetCursorPos(target.x, target.y);
+        // Never keep the pointer trapped when the user switches away from the
+        // game. The previous clip is restored when cursor control is disabled.
+        ClipCursor(nullptr);
+        return;
     }
 
-    CURSORINFO cursorInfo{sizeof(cursorInfo)};
-    if (!GetCursorInfo(&cursorInfo) || !(cursorInfo.flags & CURSOR_SHOWING))
-    {
-        while (ShowCursor(TRUE) < 0)
-            ;
-    }
+    RECT client{};
+    if (!GetClientRect(m_window, &client))
+        return;
+
+    POINT topLeft{client.left, client.top};
+    POINT bottomRight{client.right, client.bottom};
+    if (!ClientToScreen(m_window, &topLeft) || !ClientToScreen(m_window, &bottomRight))
+        return;
+
+    RECT screenRect{topLeft.x, topLeft.y, bottomRight.x, bottomRight.y};
+    ClipCursor(&screenRect);
 }

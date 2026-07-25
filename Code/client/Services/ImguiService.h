@@ -25,16 +25,20 @@ struct ImguiService
     LRESULT WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void RawInputHandler(RAWINPUT& aRawinput);
     void SetCursorControlEnabled(bool aEnabled) noexcept;
+    void OnWindowFocusChanged(bool aFocused) noexcept;
 
     entt::sink<entt::sigh<TCallback>> OnDraw;
 
 private:
     void ClampVirtualCursor() noexcept;
-    void RestoreVirtualCursor() const noexcept;
+    void UpdateCursorClip() const noexcept;
 
     ImGuiImpl::ImGuiDriver m_imDriver;
     entt::sigh<TCallback> m_drawSignal;
     HWND m_window = nullptr;
     POINT m_virtualCursor{};
+    RECT m_previousClipRect{};
     bool m_cursorControlEnabled = false;
+    bool m_windowFocused = false;
+    bool m_hasPreviousClipRect = false;
 };

@@ -33,6 +33,36 @@ DirectInput ABI. The dedicated server has a separate native Linux path.
 guarantee for every combination of distribution, driver, Proton version, mod manager,
 and load order.
 
+## Validated Proton and launch methods
+
+The compatibility tool configured for Skyrim in Steam is not necessarily the tool
+used by another launcher. Runtime results must therefore record both the Proton
+version and the launch path.
+
+The following matrix records the completed runtime tests:
+
+| Launch path | Actual runtime | Build | Result |
+| --- | --- | --- | --- |
+| Steam Non-Steam shortcut pointing to `SkyrimTogether.exe` | Valve Proton 11.0, reporting Wine 11.0 | `0954a161` | Game, UI, and vanilla `v1.8.0` server connection succeeded |
+| Steam Non-Steam shortcut pointing to `SkyrimTogether.exe` | Proton-CachyOS Latest | `0954a161` | Game, UI, and vanilla `v1.8.0` server connection succeeded |
+| Steam Non-Steam shortcut pointing to `SkyrimTogether.exe` | GE-Proton11-1 | `96dc3db2` | Randomized high-address image, game, UI, and vanilla `v1.8.0` server connection succeeded |
+| Vortex tool entry with the runtime-refresh fix | Proton-CachyOS Latest, reporting Wine 11.0 | `96dc3db2` | Game, UI, and vanilla `v1.8.0` server connection succeeded |
+| Vortex tool entry with the runtime-refresh fix | GE-Proton11-1 | `96dc3db2` | Randomized high-address image, game, UI, and vanilla `v1.8.0` server connection succeeded |
+
+The remote-header change in commit `96dc3db` accepts Wine's relocated in-memory image
+base while preserving the remaining PE validation checks. GE-Proton11-1 loaded Skyrim
+at `0x6fffe7c10000`, compared with the preferred `0x140000000`, and completed the
+entire CEG, payload, UI, and server-connection path. No `.text` relocation entry was
+needed for Skyrim SE `1.6.1170`, matching the offline relocation-table analysis.
+
+The current recommended path is:
+
+1. use Vortex, another mod manager, or a manual installation to deploy the artifact;
+2. add `Data/SkyrimTogetherReborn/SkyrimTogether.exe` to Steam as a Non-Steam game;
+3. force Valve Proton 11.0, GE-Proton11-1, or the validated Proton-CachyOS release
+   on that shortcut;
+4. launch STR from Steam.
+
 ## Why the original launcher failed
 
 The upstream path uses `ExeLoader` to map the game image inside the launcher process.
@@ -77,6 +107,12 @@ fixups. Keeping the parser generic avoids reintroducing the fixed-base assumptio
 other supported executable layouts. Malformed images and unknown relocation types
 inside `.text` are rejected before the game resumes.
 
+In the current tests, Valve Proton 11.0 mapped Skyrim at its preferred base and
+completed launch and server connection. GE-Proton11-1 randomized the image base,
+exposing the remote-header validation issue in `0954a161`; the same scenario completed
+successfully with `96dc3db2`. “Proton 11” is therefore not a single loader behavior,
+even though both tested distributions are now supported.
+
 ## Why CEF was removed from the Proton path
 
 The embedded CEF runtime raises `0x80000003` inside `libcef.dll` under Proton. The
@@ -112,6 +148,38 @@ Documents/My Games/Skyrim Special Edition/SkyrimPrefs.ini
 An existing preferences file is copied once to
 `SkyrimPrefs.ini.skyrim-together.bak` before modification. The picker can be hidden
 after a selection and reopened with `--configure`.
+
+## Vortex launch path
+
+The tested native Vortex AppImage applies its own Skyrim Together launch workaround.
+An earlier build cached a compatibility-tool path and continued to invoke:
+
+```text
+.../Steam/compatibilitytools.d/GE-Proton11-1/files/bin/wineserver
+```
+
+and using Skyrim's prefix:
+
+```text
+.../Steam/steamapps/compatdata/489830/pfx
+```
+
+after Skyrim was changed to Valve Proton 11 and Proton-CachyOS in Steam. Those
+failures were therefore additional GE-Proton11-1 attempts, not regressions reproduced
+under Valve or CachyOS Proton.
+
+The Vortex Linux fork now refreshes Steam's compatibility mapping immediately before
+launch. A Proton-CachyOS launch through this path reached a vanilla server. During a
+subsequent test, however, the Proton process started at `17:39:01` and Steam wrote the
+new `489830 -> GE-Proton11-1` mapping at `17:39:03.848`; Vortex correctly launched
+the previous CachyOS selection because the new value was not yet on disk. Wait for
+Steam to finish writing `config/config.vdf` after changing Proton.
+
+Vortex remains suitable for installing, deploying, and launching the mod. The
+corrected path was validated with both Proton-CachyOS and GE-Proton11-1. In the GE
+test, the process environment, Proton command, and `wineserver` all resolved to
+GE-Proton11-1; the game then completed high-ASLR CEG preparation, opened the UI, and
+authenticated with a vanilla `v1.8.0` server.
 
 ## ImGui UI
 
@@ -188,6 +256,10 @@ The client records the endpoint, route type (direct IP or name resolution), prot
 commit, loaded-mod count, and authentication stage. Timeouts, DNS failures, and local
 network problems are translated into distinct UI messages.
 
+The launcher console may remain blank when Steam owns the Proton process. This is not
+a failure signal when the game and UI continue to load; the file logs above remain
+authoritative. Use `--verbose` or `--debug` to request additional launcher detail.
+
 ## Build and distribution
 
 The [linux-port-playable.yml](../.github/workflows/linux-port-playable.yml) workflow
@@ -221,9 +293,9 @@ limitations.
 
 ## Next steps
 
-- complete runtime validation across Proton 11 builds and different drivers;
+- complete runtime validation across other Proton 11 builds and different drivers;
 - validate the complete party workflow across several vanilla servers;
 - add optional UI audio/localization parity without introducing CEF;
 - automate a payload smoke test in addition to build/link validation;
-- improve integration with Vortex, Lutris, Bottles, and Steam Deck;
+- improve integration with Lutris, Bottles, and Steam Deck;
 - review whether CEF artifacts are needed in a Proton-only package.

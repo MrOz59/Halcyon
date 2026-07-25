@@ -105,6 +105,48 @@ bool IsDisableKey(int aKey) noexcept
     return aKey == VK_ESCAPE;
 }
 
+bool IsSystemWindowShortcut(UINT aMessage, WPARAM aKey) noexcept
+{
+    if (aMessage != WM_SYSKEYDOWN && aMessage != WM_SYSKEYUP)
+        return false;
+
+    return aKey == VK_TAB || aKey == VK_RETURN || aKey == VK_F4;
+}
+
+bool IsImGuiInputMessage(UINT aMessage, WPARAM aKey) noexcept
+{
+    if (IsSystemWindowShortcut(aMessage, aKey))
+        return false;
+
+    switch (aMessage)
+    {
+    case WM_INPUT:
+    case WM_MOUSEMOVE:
+    case WM_MOUSELEAVE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_RBUTTONDBLCLK:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_MBUTTONDBLCLK:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_XBUTTONDBLCLK:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+    case WM_KEYDOWN:
+    case WM_KEYUP:
+    case WM_SYSKEYDOWN:
+    case WM_SYSKEYUP:
+    case WM_CHAR:
+    case WM_SETCURSOR: return true;
+    default: return false;
+    }
+}
+
 void SetSystemCursorVisible(bool aVisible) noexcept
 {
     CURSORINFO cursorInfo{sizeof(cursorInfo)};
@@ -146,11 +188,12 @@ void InputService::RefreshInputState() noexcept
     if (inputHook.IsEnabled() != inputActive)
         inputHook.SetEnabled(inputActive);
 
-    // The Proton path and the standalone F3 debugger use the system cursor.
-    // Native CEF draws its own cursor while active, so keep the system one hidden.
-    const bool showSystemCursor = inputActive && (pNativeOverlay || !s_pOverlay->GetActive());
-    world.ctx().at<ImguiService>().SetCursorControlEnabled(showSystemCursor);
-    SetSystemCursorVisible(showSystemCursor);
+    // The Proton path and the standalone F3 debugger use a software cursor drawn
+    // by ImGui. Keeping the physical cursor hidden prevents Skyrim and Wine from
+    // fighting over its position while the overlay owns input.
+    const bool drawImGuiCursor = inputActive && (pNativeOverlay || !s_pOverlay->GetActive());
+    world.ctx().at<ImguiService>().SetCursorControlEnabled(drawImGuiCursor);
+    SetSystemCursorVisible(false);
 }
 
 void SetUIActive(OverlayService& aOverlay, auto apRenderer, bool aActive)
@@ -412,7 +455,7 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
             if (uMsg == WM_CHAR && wParam == VK_RETURN)
             {
                 s_suppressChatOpenCharacter = false;
-                return 0;
+                return 1;
             }
 
             if (uMsg == WM_KEYUP && wParam == VK_RETURN)
@@ -430,13 +473,16 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
             // frame focuses the field. Do not let that character immediately
             // submit and close the freshly opened chat.
             s_suppressChatOpenCharacter = true;
-            return 0;
+            return 1;
         }
 
         auto& imgui = World::Get().ctx().at<ImguiService>();
 
         if (imguiInputActive)
             imgui.WndProcHandler(hwnd, uMsg, wParam, lParam);
+
+        if (uMsg == WM_SETFOCUS || uMsg == WM_KILLFOCUS)
+            imgui.OnWindowFocusChanged(uMsg == WM_SETFOCUS);
 
         if (uMsg == WM_INPUT)
         {
@@ -469,7 +515,11 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
             spdlog::info("Input language changed, current ACP: {}", s_currentACP);
         }
 
-        return 0;
+        // ImGui and Skyrim share the same window. Once the native overlay owns
+        // input, do not dispatch the same raw, mouse, or keyboard message to the
+        // game's WndProc: Skyrim can otherwise recapture/recenter the cursor and
+        // deactivate the currently edited ImGui text field.
+        return imguiInputActive && IsImGuiInputMessage(uMsg, wParam) ? 1 : 0;
     }
 
     const auto pApp = s_pOverlay->GetOverlayApp();
@@ -489,11 +539,12 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 
     const bool active = s_pOverlay->GetActive();
     const bool imguiInputActive = active || World::Get().GetDebugService().IsVisible();
+    auto& imgui = World::Get().ctx().at<ImguiService>();
     if (imguiInputActive)
-    {
-        auto& imgui = World::Get().ctx().at<ImguiService>();
         imgui.WndProcHandler(hwnd, uMsg, wParam, lParam);
-    }
+
+    if (uMsg == WM_SETFOCUS || uMsg == WM_KILLFOCUS)
+        imgui.OnWindowFocusChanged(uMsg == WM_SETFOCUS);
 
     POINT position;
 
@@ -510,10 +561,7 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
         GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, &input, &size, sizeof(RAWINPUTHEADER));
 
         if (imguiInputActive)
-        {
-            auto& imgui = World::Get().ctx().at<ImguiService>();
             imgui.RawInputHandler(input);
-        }
 
         if (input.header.dwType == RIM_TYPEKEYBOARD)
         {
