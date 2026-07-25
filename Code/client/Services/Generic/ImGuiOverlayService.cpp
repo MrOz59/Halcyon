@@ -93,6 +93,73 @@ std::string WinHttpError(const char* acAction)
 {
     return std::string(acAction) + " failed (WinHTTP error " + std::to_string(GetLastError()) + ")";
 }
+
+ImVec4 SkyrimAccent(float aAlpha = 1.0f)
+{
+    return ImVec4(0.78f, 0.67f, 0.42f, aAlpha);
+}
+
+void DrawDiamond(ImDrawList* apDrawList, const ImVec2& acCenter, float aRadius, ImU32 aColor)
+{
+    apDrawList->AddQuadFilled(
+        ImVec2(acCenter.x, acCenter.y - aRadius), ImVec2(acCenter.x + aRadius, acCenter.y), ImVec2(acCenter.x, acCenter.y + aRadius), ImVec2(acCenter.x - aRadius, acCenter.y),
+        aColor);
+}
+
+void DrawSkyrimWindowFrame()
+{
+    ImDrawList* pDrawList = ImGui::GetWindowDrawList();
+    const ImVec2 windowPos = ImGui::GetWindowPos();
+    const ImVec2 windowSize = ImGui::GetWindowSize();
+    const ImVec2 minimum(windowPos.x + 3.f, windowPos.y + 3.f);
+    const ImVec2 maximum(windowPos.x + windowSize.x - 3.f, windowPos.y + windowSize.y - 3.f);
+    const ImU32 subtle = ImGui::ColorConvertFloat4ToU32(SkyrimAccent(0.24f));
+    const ImU32 accent = ImGui::ColorConvertFloat4ToU32(SkyrimAccent(0.68f));
+    constexpr float cornerLength = 22.f;
+
+    pDrawList->AddRect(minimum, maximum, subtle, 0.f, 0, 1.f);
+
+    pDrawList->AddLine(minimum, ImVec2(minimum.x + cornerLength, minimum.y), accent, 1.5f);
+    pDrawList->AddLine(minimum, ImVec2(minimum.x, minimum.y + cornerLength), accent, 1.5f);
+    pDrawList->AddLine(ImVec2(maximum.x - cornerLength, minimum.y), ImVec2(maximum.x, minimum.y), accent, 1.5f);
+    pDrawList->AddLine(ImVec2(maximum.x, minimum.y), ImVec2(maximum.x, minimum.y + cornerLength), accent, 1.5f);
+    pDrawList->AddLine(ImVec2(minimum.x, maximum.y - cornerLength), ImVec2(minimum.x, maximum.y), accent, 1.5f);
+    pDrawList->AddLine(ImVec2(minimum.x, maximum.y), ImVec2(minimum.x + cornerLength, maximum.y), accent, 1.5f);
+    pDrawList->AddLine(ImVec2(maximum.x - cornerLength, maximum.y), maximum, accent, 1.5f);
+    pDrawList->AddLine(ImVec2(maximum.x, maximum.y - cornerLength), maximum, accent, 1.5f);
+}
+
+void DrawSkyrimSectionHeading(const char* acLabel)
+{
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    const ImVec2 textSize = ImGui::CalcTextSize(acLabel);
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float textX = cursor.x + std::max(0.f, (width - textSize.x) * 0.5f);
+    const float centerY = cursor.y + textSize.y * 0.5f;
+    const float ornamentGap = 14.f;
+    const ImU32 lineColor = ImGui::ColorConvertFloat4ToU32(SkyrimAccent(0.54f));
+    const ImU32 textColor = ImGui::ColorConvertFloat4ToU32(SkyrimAccent());
+    ImDrawList* pDrawList = ImGui::GetWindowDrawList();
+
+    const float leftDiamondX = textX - ornamentGap;
+    const float rightDiamondX = textX + textSize.x + ornamentGap;
+
+    if (leftDiamondX - cursor.x > 10.f)
+    {
+        pDrawList->AddLine(ImVec2(cursor.x, centerY), ImVec2(leftDiamondX - 5.f, centerY), lineColor, 1.f);
+        DrawDiamond(pDrawList, ImVec2(leftDiamondX, centerY), 3.f, lineColor);
+    }
+
+    const float contentEnd = cursor.x + width;
+    if (contentEnd - rightDiamondX > 10.f)
+    {
+        DrawDiamond(pDrawList, ImVec2(rightDiamondX, centerY), 3.f, lineColor);
+        pDrawList->AddLine(ImVec2(rightDiamondX + 5.f, centerY), ImVec2(contentEnd, centerY), lineColor, 1.f);
+    }
+
+    pDrawList->AddText(ImVec2(textX, cursor.y), textColor, acLabel);
+    ImGui::Dummy(ImVec2(width, textSize.y + 8.f));
+}
 } // namespace
 
 ImGuiOverlayService::ImGuiOverlayService(World& aWorld, TransportService& aTransport, entt::dispatcher& aDispatcher, ImguiService& aImguiService)
@@ -241,13 +308,16 @@ void ImGuiOverlayService::DrawMainWindow() noexcept
     ImGui::SetNextWindowSize(initialSize, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(displaySize.x * 0.5f, displaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 
-    if (!ImGui::Begin("Skyrim Together##native_overlay", nullptr, ImGuiWindowFlags_NoCollapse))
+    if (!ImGui::Begin("SKYRIM TOGETHER##native_overlay", nullptr, ImGuiWindowFlags_NoCollapse))
     {
         ImGui::End();
         return;
     }
 
-    const ImVec4 statusColor = m_connected ? ImVec4(0.35f, 0.85f, 0.45f, 1.f) : (m_connecting ? ImVec4(1.f, 0.78f, 0.28f, 1.f) : ImVec4(0.75f, 0.78f, 0.82f, 1.f));
+    DrawSkyrimWindowFrame();
+    DrawSkyrimSectionHeading("SKYRIM TOGETHER");
+
+    const ImVec4 statusColor = m_connected ? ImVec4(0.62f, 0.72f, 0.50f, 1.f) : (m_connecting ? SkyrimAccent() : ImVec4(0.58f, 0.57f, 0.53f, 1.f));
     ImGui::TextColored(statusColor, "%s", m_statusLine.c_str());
     ImGui::SameLine();
     ImGui::TextDisabled("  |  Protocol %s  |  Build %s  |  F2 or Esc to close", PROTOCOL_VERSION, BUILD_COMMIT);
@@ -276,19 +346,19 @@ void ImGuiOverlayService::DrawMainWindow() noexcept
 
     if (ImGui::BeginTabBar("main_tabs"))
     {
-        if (ImGui::BeginTabItem("Connect"))
+        if (ImGui::BeginTabItem("CONNECT"))
         {
             DrawConnectionTab();
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Public servers"))
+        if (ImGui::BeginTabItem("PUBLIC SERVERS"))
         {
             DrawServerBrowserTab();
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Players"))
+        if (ImGui::BeginTabItem("PLAYERS"))
         {
             DrawPlayersTab();
             ImGui::EndTabItem();
@@ -303,16 +373,20 @@ void ImGuiOverlayService::DrawMainWindow() noexcept
 void ImGuiOverlayService::DrawConnectionTab() noexcept
 {
     ImGui::Spacing();
+    DrawSkyrimSectionHeading("DIRECT CONNECTION");
     ImGui::TextWrapped("Connect directly to a private or self-hosted server. Use the Public servers tab to browse announced servers.");
     ImGui::Spacing();
 
     ImGui::BeginDisabled(m_connected || m_connecting);
+    ImGui::TextDisabled("ADDRESS");
     ImGui::SetNextItemWidth(std::min(460.f, ImGui::GetContentRegionAvail().x));
     ImGui::InputTextWithHint("##manual_address", "Address or hostname", m_addressBuffer, std::size(m_addressBuffer));
 
+    ImGui::TextDisabled("PORT");
     ImGui::SetNextItemWidth(150.f);
-    ImGui::InputInt("Port", &m_port);
+    ImGui::InputInt("##manual_port", &m_port);
 
+    ImGui::TextDisabled("PASSWORD");
     ImGui::SetNextItemWidth(std::min(460.f, ImGui::GetContentRegionAvail().x));
     ImGui::InputTextWithHint("##manual_password", "Password (optional)", m_passwordBuffer, std::size(m_passwordBuffer), ImGuiInputTextFlags_Password);
     ImGui::EndDisabled();
@@ -320,14 +394,14 @@ void ImGuiOverlayService::DrawConnectionTab() noexcept
     ImGui::Spacing();
     if (!m_connected && !m_connecting)
     {
-        if (ImGui::Button("Connect", ImVec2(140.f, 0.f)))
+        if (ImGui::Button("CONNECT", ImVec2(140.f, 0.f)))
         {
             const int port = std::clamp(m_port, 1, 65535);
             m_port = port;
             Connect(m_addressBuffer, static_cast<uint16_t>(port), m_passwordBuffer);
         }
     }
-    else if (ImGui::Button(m_connecting ? "Cancel" : "Disconnect", ImVec2(140.f, 0.f)))
+    else if (ImGui::Button(m_connecting ? "CANCEL" : "DISCONNECT", ImVec2(140.f, 0.f)))
     {
         World& world = m_world;
         world.GetRunner().Queue([&world] { world.GetTransport().Close(); });
@@ -337,9 +411,10 @@ void ImGuiOverlayService::DrawConnectionTab() noexcept
 void ImGuiOverlayService::DrawServerBrowserTab() noexcept
 {
     ImGui::Spacing();
+    DrawSkyrimSectionHeading("SERVER BROWSER");
 
     ImGui::BeginDisabled(m_serverListLoading);
-    if (ImGui::Button("Refresh"))
+    if (ImGui::Button("REFRESH"))
         RefreshPublicServers();
     ImGui::EndDisabled();
 
@@ -349,15 +424,16 @@ void ImGuiOverlayService::DrawServerBrowserTab() noexcept
     else
         ImGui::TextDisabled("%zu servers received", m_publicServers.size());
 
+    ImGui::TextDisabled("SEARCH");
     ImGui::SetNextItemWidth(std::min(360.f, ImGui::GetContentRegionAvail().x));
     ImGui::InputTextWithHint("##server_search", "Search by name or description", m_serverSearchBuffer, std::size(m_serverSearchBuffer));
 
     bool filtersChanged = false;
-    filtersChanged |= ImGui::Checkbox("Hide full", &m_hideFullServers);
+    filtersChanged |= ImGui::Checkbox("HIDE FULL", &m_hideFullServers);
     ImGui::SameLine();
-    filtersChanged |= ImGui::Checkbox("Hide password protected", &m_hidePasswordServers);
+    filtersChanged |= ImGui::Checkbox("HIDE PASSWORD PROTECTED", &m_hidePasswordServers);
     ImGui::SameLine();
-    filtersChanged |= ImGui::Checkbox("Hide version mismatch", &m_hideVersionMismatch);
+    filtersChanged |= ImGui::Checkbox("HIDE VERSION MISMATCH", &m_hideVersionMismatch);
     if (filtersChanged)
         SaveFavorites();
 
@@ -412,11 +488,11 @@ void ImGuiOverlayService::DrawServerBrowserTab() noexcept
     if (ImGui::BeginTable("public_server_table", 5, tableFlags, ImVec2(0.f, tableHeight)))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableSetupColumn("Fav", ImGuiTableColumnFlags_WidthFixed, 42.f);
-        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 0.52f);
-        ImGui::TableSetupColumn("Players", ImGuiTableColumnFlags_WidthFixed, 72.f);
-        ImGui::TableSetupColumn("Version", ImGuiTableColumnFlags_WidthFixed, 90.f);
-        ImGui::TableSetupColumn("Access", ImGuiTableColumnFlags_WidthFixed, 88.f);
+        ImGui::TableSetupColumn("FAV", ImGuiTableColumnFlags_WidthFixed, 42.f);
+        ImGui::TableSetupColumn("NAME", ImGuiTableColumnFlags_WidthStretch, 0.52f);
+        ImGui::TableSetupColumn("PLAYERS", ImGuiTableColumnFlags_WidthFixed, 72.f);
+        ImGui::TableSetupColumn("VERSION", ImGuiTableColumnFlags_WidthFixed, 90.f);
+        ImGui::TableSetupColumn("ACCESS", ImGuiTableColumnFlags_WidthFixed, 88.f);
         ImGui::TableHeadersRow();
 
         for (const PublicServer* pServer : visibleServers)
@@ -454,7 +530,7 @@ void ImGuiOverlayService::DrawServerBrowserTab() noexcept
                 ImGui::TextUnformatted(pServer->version.c_str());
 
             ImGui::TableSetColumnIndex(4);
-            ImGui::TextUnformatted(pServer->passwordProtected ? "Password" : "Open");
+            ImGui::TextUnformatted(pServer->passwordProtected ? "PASSWORD" : "OPEN");
             ImGui::PopID();
         }
 
@@ -473,8 +549,8 @@ void ImGuiOverlayService::DrawServerBrowserTab() noexcept
 
     if (pSelectedServer)
     {
-        ImGui::Separator();
-        ImGui::Text("%s", pSelectedServer->name.c_str());
+        DrawSkyrimSectionHeading("SELECTED SERVER");
+        ImGui::TextColored(SkyrimAccent(), "%s", pSelectedServer->name.c_str());
         ImGui::SameLine();
         ImGui::TextDisabled("%s", MakeEndpoint(pSelectedServer->address, pSelectedServer->port).c_str());
 
@@ -489,7 +565,7 @@ void ImGuiOverlayService::DrawServerBrowserTab() noexcept
         }
 
         ImGui::BeginDisabled(m_connected || m_connecting);
-        if (ImGui::Button("Connect to selected"))
+        if (ImGui::Button("CONNECT TO SELECTED"))
             Connect(pSelectedServer->address, pSelectedServer->port, m_serverPasswordBuffer);
         ImGui::EndDisabled();
     }
@@ -498,6 +574,7 @@ void ImGuiOverlayService::DrawServerBrowserTab() noexcept
 void ImGuiOverlayService::DrawPlayersTab() noexcept
 {
     ImGui::Spacing();
+    DrawSkyrimSectionHeading("ADVENTURERS");
     ImGui::Text("%zu players online", m_players.size());
     ImGui::Separator();
 
@@ -509,8 +586,8 @@ void ImGuiOverlayService::DrawPlayersTab() noexcept
 
     if (ImGui::BeginTable("players_table", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
     {
-        ImGui::TableSetupColumn("Player");
-        ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed, 90.f);
+        ImGui::TableSetupColumn("PLAYER");
+        ImGui::TableSetupColumn("LEVEL", ImGuiTableColumnFlags_WidthFixed, 90.f);
         ImGui::TableHeadersRow();
 
         for (const auto& [id, player] : m_players)
@@ -535,11 +612,14 @@ void ImGuiOverlayService::DrawChatWindow() noexcept
     ImGui::SetNextWindowSize(initialSize, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(30.f, std::max(30.f, displaySize.y - initialSize.y - 30.f)), ImGuiCond_FirstUseEver);
 
-    if (!ImGui::Begin("Chat##native_chat"))
+    if (!ImGui::Begin("CHAT##native_chat"))
     {
         ImGui::End();
         return;
     }
+
+    DrawSkyrimWindowFrame();
+    DrawSkyrimSectionHeading("GLOBAL CHAT");
 
     const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
     if (ImGui::BeginChild("chat_scroll", ImVec2(0, -footer), true))
@@ -550,9 +630,13 @@ void ImGuiOverlayService::DrawChatWindow() noexcept
         for (const auto& line : m_chat)
         {
             if (line.author.empty())
-                ImGui::TextDisabled("%s", line.text.c_str());
+                ImGui::TextColored(SkyrimAccent(0.72f), "%s", line.text.c_str());
             else
-                ImGui::TextWrapped("%s: %s", line.author.c_str(), line.text.c_str());
+            {
+                ImGui::TextColored(SkyrimAccent(), "%s", line.author.c_str());
+                ImGui::SameLine(0.f, 0.f);
+                ImGui::TextWrapped(": %s", line.text.c_str());
+            }
         }
 
         if (m_scrollChatToBottom)
@@ -569,7 +653,7 @@ void ImGuiOverlayService::DrawChatWindow() noexcept
         "##chat_input", m_connected ? "Type a global message" : "Connect to a server to chat", m_chatInputBuffer, std::size(m_chatInputBuffer),
         ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
-    const bool sendClicked = ImGui::Button("Send");
+    const bool sendClicked = ImGui::Button("SEND");
     ImGui::EndDisabled();
 
     if ((submitted || sendClicked) && m_chatInputBuffer[0] != '\0')
@@ -597,14 +681,21 @@ void ImGuiOverlayService::Connect(const std::string& acAddress, uint16_t aPort, 
     }
 
     const std::string endpoint = MakeEndpoint(address, aPort);
+    const bool directIp = address.find(':') != std::string::npos;
     m_transport.SetServerPassword(acPassword);
     m_connecting = true;
     m_statusLine = "Connecting to " + endpoint + "...";
     m_errorLine.clear();
 
-    spdlog::info("[overlay] connecting to {} with protocol {} (build {})", endpoint, PROTOCOL_VERSION, BUILD_COMMIT);
+    spdlog::info("[overlay] connecting to {} via {} with protocol {} (build {})", endpoint, directIp ? "direct IP" : "name resolution", PROTOCOL_VERSION, BUILD_COMMIT);
     World& world = m_world;
-    world.GetRunner().Queue([&world, endpoint] { world.GetTransport().Connect(endpoint); });
+    world.GetRunner().Queue(
+        [&world, endpoint, directIp]
+        {
+            const bool started = directIp ? world.GetTransport().ConnectByIp(endpoint) : world.GetTransport().Connect(endpoint);
+            if (!started)
+                world.GetTransport().OnDisconnected(Client::kLocalProblem);
+        });
 }
 
 ImGuiOverlayService::ServerListResult ImGuiOverlayService::FetchPublicServers() noexcept
@@ -715,6 +806,12 @@ ImGuiOverlayService::ServerListResult ImGuiOverlayService::FetchPublicServers() 
 
             if (server.name.size() > 100)
                 server.name.resize(100);
+            if (server.description.size() > 512)
+                server.description.resize(512);
+            if (server.address.size() > 255)
+                server.address.resize(255);
+            if (server.version.size() > 64)
+                server.version.resize(64);
 
             if (!server.address.empty())
                 result.servers.emplace_back(std::move(server));
@@ -777,6 +874,15 @@ void ImGuiOverlayService::PollPublicServers() noexcept
     if (m_serverListLoaded)
     {
         m_publicServers = std::move(result.servers);
+
+        const bool selectedServerStillExists =
+            std::any_of(m_publicServers.begin(), m_publicServers.end(), [this](const PublicServer& acServer) { return MakeServerKey(acServer) == m_selectedServerKey; });
+        if (!selectedServerStillExists)
+        {
+            m_selectedServerKey.clear();
+            m_serverPasswordBuffer[0] = '\0';
+        }
+
         spdlog::info("[overlay] loaded {} public servers", m_publicServers.size());
     }
     else
@@ -831,6 +937,11 @@ void ImGuiOverlayService::SaveFavorites() const noexcept
         const std::filesystem::path settingsPath = GetNativeOverlaySettingsPath();
         std::error_code error;
         std::filesystem::create_directories(settingsPath.parent_path(), error);
+        if (error)
+        {
+            spdlog::warn("[overlay] could not create native UI settings directory '{}': {}", settingsPath.parent_path().string(), error.message());
+            return;
+        }
 
         nlohmann::json settings;
         settings["favorites"] = m_favoriteServers;
@@ -839,8 +950,15 @@ void ImGuiOverlayService::SaveFavorites() const noexcept
         settings["hide_version_mismatch"] = m_hideVersionMismatch;
 
         std::ofstream file(settingsPath, std::ios::trunc);
-        if (file)
-            file << settings.dump(2);
+        if (!file)
+        {
+            spdlog::warn("[overlay] could not open native UI settings file '{}'", settingsPath.string());
+            return;
+        }
+
+        file << settings.dump(2);
+        if (!file)
+            spdlog::warn("[overlay] could not write native UI settings file '{}'", settingsPath.string());
     }
     catch (const std::exception& exception)
     {

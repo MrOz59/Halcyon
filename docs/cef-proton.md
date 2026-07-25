@@ -1,151 +1,92 @@
-# CEF sob Proton/Wine — diagnóstico e decisão técnica
+# CEF sob Proton/Wine — diagnóstico e decisão implementada
 
-> Documento de decisão da **Fase 4/5** do roadmap. Registra a causa raiz do crash
-> do launcher no Proton e as opções de correção, **antes** de alterar código de
-> produção. Complementa [`architecture.md`](architecture.md) e [`linux.md`](linux.md).
+> Registro técnico do bloqueio que levou à UI ImGui. A conclusão atual é: **CEF não é
+> inicializado sob Wine/Proton**. No Windows nativo, o caminho upstream é preservado.
 
-## Sintoma
+## Sintoma observado
 
-Ao lançar o `SkyrimTogether.exe` (launcher) sob Proton/Wine, uma janela aparece por
-uma fração de segundo e desaparece; o launcher fecha. Relatado também por usuários de
-Steam Deck/Proton — é um problema conhecido e não-trivial da comunidade.
+Depois que o loader e o payload passaram a iniciar o jogo, o processo ainda encerrava
+com exceções como:
 
-## Evidência (crash dump do próprio STR / Sentry)
-
-```
-level: fatal
-Top of stack: libcef.dll.pdb
-Módulos envolvidos: chrome_elf.dll, D3DCompiler_47.dll, libcef.dll
+```text
+0x80000003 em libcef.dll
+VectoredExceptionHandler: crash occurred
 ```
 
-## Causa raiz
+Os endereços mudavam entre execuções, mas permaneciam dentro de `libcef.dll`. Em
+algumas tentativas o CEF chegava mais longe antes do `int3`; em outras, a exceção
+acontecia durante `CefInitialize` ou criação do browser.
 
-O crash é **dentro do `libcef.dll`** (o Chromium embarcado), com **`D3DCompiler_47.dll`**
-no topo do stack. `D3DCompiler_47` é o compilador de shaders HLSL da DirectX. O
-Chromium só o toca quando o **backend gráfico acelerado (ANGLE / GPU process)** tenta
-compilar shaders para compor a página.
+## Hipótese inicial
 
-Ou seja: o CEF está tentando **inicializar o pipeline de GPU do Chromium** (ANGLE sobre
-D3D11) e a compilação de shaders quebra sob Wine/Proton. Não é o rendering do overlay
-em si — esse é feito por CPU (ver abaixo).
+O overlay usa `CefRenderHandler::OnPaint` e copia por CPU o buffer do CEF para uma
+textura D3D11. Portanto, ele não precisa de `OnAcceleratedPaint`. A primeira hipótese
+foi que o Chromium inicializava ANGLE/GPU desnecessariamente sob Wine e falhava no
+pipeline que envolve `D3DCompiler_47.dll`.
 
-### Por que isto é revelador
+Foram avaliados ou implementados experimentalmente:
 
-Confirmado lendo o código do overlay:
+- `--disable-gpu` e `--disable-gpu-compositing`;
+- renderização por software/SwiftShader;
+- desligamento de recursos de rede do Chromium;
+- `single-process`;
+- `external_message_pump`;
+- resolução explícita dos diretórios de recursos do CEF;
+- logs e marcadores antes/depois de `CefInitialize` e `CreateBrowser`;
+- carregamento isolado de `libcef.dll` e handlers de diagnóstico.
 
-- O render handler do STR usa **`OnPaint`** com cópia por CPU para uma textura D3D11
-  dinâmica — [`OverlayRenderHandlerD3D11.cpp`](../Libraries/TiltedUI/Code/ui/src/OverlayRenderHandlerD3D11.cpp)
-  (`D3D11_MAP_WRITE_DISCARD` + `memcpy` do buffer do CEF). **Não** usa
-  `OnAcceleratedPaint` nem shared textures de GPU. O caminho de exibição do overlay,
-  portanto, **não precisa** do GPU process do Chromium.
-- Ainda assim, na inicialização o CEF liga o GPU process/ANGLE por padrão, e é aí que
-  o D3DCompiler é acionado e crasha.
+Essas tentativas foram importantes para separar o crash do loader, do payload e do
+loop do jogo. Nenhuma tornou o CEF confiável no ambiente Proton testado.
 
-### O que falta no código atual
+## Decisão
 
-Em [`OverlayApp.cpp`](../Libraries/TiltedUI/Code/ui/src/OverlayApp.cpp):
+O projeto já possuía renderer ImGui sobre D3D11 para ferramentas internas. Reusar essa
+infraestrutura é menor e mais previsível do que manter um runtime Chromium completo
+dentro do processo do Skyrim sob Wine.
 
-- `CefSettings`: define `no_sandbox = true`, `multi_threaded_message_loop = true`,
-  `windowless_rendering_enabled = true`. **Não desabilita a GPU.**
-- `OnBeforeCommandLineProcessing` (linha ~154) adiciona apenas
-  `allow-file-access-from-files` e `allow-universal-access-from-files`.
-  **Não passa `--disable-gpu` nem `--disable-gpu-compositing`.**
+Quando Wine é detectado:
 
-Versão do CEF: **`cef 141.0.11`** (Chromium 141) — pinada em
-[`Libraries/TiltedUI/xmake.lua`](../Libraries/TiltedUI/xmake.lua). Versão recente, com
-ANGLE/GPU agressivamente ligado por padrão.
+1. `OverlayService` não cria o runtime CEF;
+2. eventos que normalmente chamariam CEF verificam se ele foi inicializado;
+3. `ImGuiOverlayService` fornece conexão, servidores públicos, jogadores e chat;
+4. `InputService` direciona teclado/mouse para ImGui apenas enquanto a UI está aberta;
+5. fechar com `F2` ou `Esc` devolve o input ao jogo.
 
-## Confirmação pela documentação do CEF
+No Windows nativo, a implementação CEF original continua sendo construída e usada.
+Por isso, dependências e recursos CEF ainda podem estar presentes no artefato geral,
+embora o caminho Proton não os carregue.
 
-- Em modo OSR (off-screen rendering), a prática recomendada é rodar com
-  `--disable-gpu --disable-gpu-compositing`. O próprio `cefclient` de exemplo passa
-  esses flags em modo OSR.
-- Com esses flags, `CefRenderHandler::OnPaint` é chamado **direto do compositor**, sem
-  cópia extra por frame — exatamente o caminho que o STR já usa.
-- Para ambientes sem GPU utilizável, pode-se forçar renderização por software com
-  `--use-gl=swiftshader` (ou `--use-gl=angle`/`--use-angle=swiftshader` em builds novos),
-  ao custo de performance.
-- `--headless` **quebra** OSR — não usar.
+## Resultado
 
-Conclusão: o STR está rodando OSR **sem** os flags de desabilitar GPU, então o Chromium
-tenta o caminho acelerado (ANGLE→D3D→`D3DCompiler_47`), que falha sob Wine.
+Com o CEF fora do caminho Wine:
 
-## Opções de correção
+- novo jogo e saves antigos carregaram sem o `int3` de `libcef.dll`;
+- o overlay abriu dentro do jogo e liberou corretamente o input;
+- a lista pública e a autenticação em servidor vanilla `v1.8.0` funcionaram;
+- chat e lista de jogadores passaram a usar diretamente os serviços do client.
 
-### Opção A — Desabilitar a GPU do Chromium (recomendada para primeiro teste)
+Esse resultado confirma a decisão para o fork, mas não prova que o CEF seja impossível
+de executar em toda versão de Wine. Ele apenas não é mais uma dependência funcional do
+cliente Linux/Proton.
 
-Adicionar em `OnBeforeCommandLineProcessing`:
+## Escopo ainda não migrado
 
-```cpp
-aCommandLine->AppendSwitch("disable-gpu");
-aCommandLine->AppendSwitch("disable-gpu-compositing");
-// se ainda faltar rasterizador utilizável sob Wine:
-// aCommandLine->AppendSwitchWithValue("use-gl", "swiftshader");
-```
+A UI ImGui atual cobre o caminho essencial de multiplayer. Recursos sociais mais
+complexos da UI TypeScript/CEF, principalmente party/grupo, ainda precisam ser
+reimplementados para paridade completa.
 
-- **Prós:** mudança mínima e cirúrgica; alinhada ao modo OSR já usado; mantém a UI web
-  atual; provavelmente resolve o crash do `D3DCompiler`. Não afeta Windows de forma
-  perceptível (OSR por CPU continua igual).
-- **Contras:** overlay 100% por CPU (o STR já é assim, então impacto baixo); se o Wine
-  não tiver nem o rasterizador de software, precisa do `swiftshader`.
-- **Risco:** baixo. **É o primeiro experimento a fazer.**
+O código em `Code/skyrim_ui`, `Code/tp_process` e `Libraries/TiltedUI` permanece
+necessário para o build Windows nativo e como referência de comportamento.
 
-### Opção B — Forçar renderização por software (SwiftShader)
+## Diagnóstico futuro
 
-Como A, porém garantindo `--use-gl=swiftshader` (ou o equivalente da versão do CEF).
+Se um crash sob Proton voltar a apontar para CEF, primeiro confirme no log que a build
+realmente detectou Wine e exibiu a decisão de pular o overlay CEF. Uma carga de
+`libcef.dll` nesse caminho indica regressão ou DLL externa; não deve ser tratada apenas
+com mais flags do Chromium.
 
-- **Prós:** máxima compatibilidade; independe de qualquer aceleração no Wine.
-- **Contras:** mais lento; depende de a build do CEF empacotar o `swiftshader`
-  (verificar os artefatos do pacote `cef 141.0.11`).
-- **Risco:** baixo–médio (empacotamento).
+Consulte também:
 
-### Opção C — Single-process
-
-Passar `single-process` para evitar o spawn de `tp_process` e a IPC do Chromium.
-
-- **Prós:** elimina a IPC multiprocesso (outro ponto frágil sob Wine).
-- **Contras:** o CEF **não** suporta oficialmente single-process com OSR/`multi_threaded_message_loop`;
-  pode introduzir instabilidade própria. Não ataca a causa raiz (que é a GPU, não a IPC).
-- **Risco:** alto. Só considerar se A/B não resolverem e o problema real for IPC.
-
-### Opção D — Remover o CEF (Fase 4 do roadmap — ImGui)
-
-Reimplementar a UI essencial (chat, conexão, lista de players/party) em **ImGui**, que
-o projeto já usa no `DebugService`, eliminando o Chromium.
-
-- **Prós:** solução definitiva e robusta no Linux; remove um enorme peso de dependência;
-  é o objetivo declarado da Fase 4.
-- **Contras:** muito trabalho; reescreve toda a camada de UI (`skyrim_ui` em TS) que hoje
-  vive dentro do CEF.
-- **Risco:** alto esforço, baixo risco técnico. Trabalho de médio/longo prazo.
-
-## Recomendação
-
-1. **Opção A primeiro** (`disable-gpu` + `disable-gpu-compositing`). É a hipótese mais
-   provável de resolver o crash exato do dump, com risco mínimo e sem afetar o Windows.
-2. Se ainda crashar por falta de rasterizador, **Opção B** (`swiftshader`).
-3. Manter **Opção D** como norte de longo prazo (Fase 4), independente do resultado acima
-   — mesmo que A/B funcionem, remover o CEF continua valendo pela robustez no Linux.
-
-Todas as mudanças de flag devem ser guardadas para **não alterar o comportamento no
-Windows** quando desnecessário (ex.: aplicar sob `#if defined(__WINE__)`/detecção de
-Proton, ou aceitar que desabilitar GPU em OSR é inócuo no Windows e aplicar sempre —
-a decidir com base em teste).
-
-## Como validar (checklist de teste no Proton)
-
-Para o próximo ciclo, ao aplicar a Opção A:
-
-1. Confirmar a versão/artefatos do pacote `cef 141.0.11` (há `swiftshader`? `libcef.dll`,
-   `chrome_elf.dll`, `locales/`, `*.pak` presentes ao lado do launcher?).
-2. Rodar sob Proton com log verboso:
-   - CEF já escreve `logs/cef_debug.log` (`log_severity = VERBOSE`, ver `OverlayApp.cpp`).
-   - `PROTON_LOG=1` (gera `steam-<appid>.log` no home) e/ou `WINEDEBUG=+loaddll` para ver
-     quais DLLs carregam/falham.
-3. Verificar no `cef_debug.log` se o GPU process ainda é iniciado e se o
-   `D3DCompiler_47` some do caminho de crash.
-4. Confirmar se o overlay (menu/chat) renderiza in-game.
-
-> Nota: nada disso foi testado ainda nesta máquina; o launcher exige toolchain Windows
-> para compilar e um ambiente Proton com Skyrim SE para rodar. Este documento é o plano.
-```
+- [estado do porte](linux.md);
+- [arquitetura geral](architecture.md);
+- [README de instalação](../README.md).

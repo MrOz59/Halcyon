@@ -1,96 +1,136 @@
-# Linux / Proton — estratégia de portabilidade
+# Linux / Proton — arquitetura e estado do porte
 
-> Documento vivo da portabilidade. Complementa [`architecture.md`](architecture.md),
-> que descreve o estado atual. Aqui ficam a **estratégia**, as **decisões** e o
-> **progresso por fase** do roadmap.
+> Documento técnico do caminho implementado na branch `linux-port`. Para instalação e
+> uso, consulte o [README](../README.md).
 
-## Foco do fork
+## Objetivo
 
-O objetivo prático deste fork é **fazer a parte que roda dentro do Skyrim funcionar sob
-Proton**. O bloqueador central identificado é o **crash do CEF (`libcef.dll`) na
-inicialização sob Wine/Proton**, com `D3DCompiler_47` no topo do stack — o Chromium tenta
-ligar o pipeline de GPU (ANGLE→D3D) e quebra. Diagnóstico completo e opções de correção
-em **[`cef-proton.md`](cef-proton.md)**. É a prioridade número um.
+Fazer launcher e client do Skyrim Together Reborn funcionarem de forma confiável sob
+Wine/Proton, preservando o Windows nativo e a compatibilidade de rede com servidores
+vanilla `v1.8.0`.
 
-## Princípio norteador
+O client continua sendo código Windows injetado no `SkyrimSE.exe`; convertê-lo para ELF
+não faz parte deste porte. Proton fornece a ABI Win32, DX11 e DirectInput necessários.
+O servidor dedicado tem um caminho Linux nativo separado.
 
-O client do Tilted é **injetado dentro do processo do jogo** (`SkyrimSE.exe`), via um
-loader manual de PE (`ExeLoader`). Não é um binário independente. Logo:
+## Estado validado
 
-- **Não** vamos recompilar o client como ELF nativo Linux.
-- **Vamos** fazer o conjunto **launcher + jogo + client rodar sob Proton/Wine**, onde a
-  ABI do Windows já existe, e tratar o Linux como plataforma de *hospedagem* oficial.
-- O código que **não** exige Windows (config, logging, seleção de path, abrir browser,
-  diálogos, integração com Steam/prefix) é o que abstraímos e, quando fizer sentido,
-  reimplementamos como ferramenta Linux nativa.
+- [x] launcher detecta Wine e seleciona a estratégia externa;
+- [x] Skyrim SE `1.6.1170` chega ao menu, abre novo jogo e carrega saves;
+- [x] Steam CEG é restaurado antes da entrada original;
+- [x] payload é injetado e inicializado antes de retomar o jogo;
+- [x] hooks relativos fora de alcance usam relay thunks próximos;
+- [x] CEF não é inicializado sob Wine;
+- [x] overlay ImGui abre com `F2` e libera corretamente o input;
+- [x] conexão direta, lista pública, favoritos, jogadores e chat funcionam;
+- [x] conexão a servidor vanilla `v1.8.0` confirmada;
+- [x] CI produz pacote jogável, símbolos e probe de diagnóstico.
 
-Regra de ouro do roadmap: **Windows continua funcionando sem alterações.** Todo código
-específico entra atrás de `#if defined(_WIN32)` / interface de plataforma, nunca
-substituindo o caminho Windows.
+“Validado” descreve o ambiente usado durante o desenvolvimento, não uma garantia para
+todas as combinações de distribuição, driver, Proton, mod manager e load order.
 
-## Camadas de portabilidade
+## Por que o launcher original falhava
 
-| Camada | Portável hoje? | Caminho |
-|--------|----------------|---------|
-| Server | ✅ nativo | Consolidar build/CI/pacotes (Fases 6–7) |
-| Código compartilhado (common/encoding/components/base) | ✅ maioria | Guardar Win32 restante atrás de `#ifdef` |
-| Launcher (config, logs, paths, UI/diálogos) | ⚠️ parcial | Abstrair via `IPlatform` (Fase 2) |
-| Launcher (ExeLoader, usvfs, script_extender) | ❌ Windows/PE | Roda sob Proton; não portar nativamente |
-| Client (hooks no jogo, DX11, CEF) | ❌ Windows | Roda sob Proton |
-| tp_process (CEF) | ❌ Windows | Roda sob Proton; avaliar CEF Linux só se desacoplar UI |
+O caminho upstream usa `ExeLoader` para mapear a imagem do jogo dentro do processo do
+launcher. Sob Wine, as tabelas de unwind da imagem auto-mapeada não ficam visíveis ao
+`RtlVirtualUnwind2`. Exceções que o Windows normalmente desenrolaria terminavam em
+crash no início do jogo.
 
-## Progresso por fase
+Sob Wine, `GameLauncherFactory` seleciona `ExternalProcessLauncher`:
 
-- [x] **Fase 0 — Engenharia reversa.** Arquitetura documentada em
-  [`architecture.md`](architecture.md). Descoberta-chave: launcher carrega o jogo
-  **in-process** (ExeLoader), não via `CreateProcess`.
-- [~] **Fase 1 — Instrumentação.** Flags `--verbose` / `--debug` / `--dump-config` e
-  logging estruturado no launcher, antes de qualquer refactor. *(em andamento)*
-- [ ] **Fase 2 — Abstração de plataforma.** Interface `IPlatform`
-  (`LaunchProcess`/`OpenBrowser`/`GetKnownFolder`/`ShowMessage`/`GetExecutableDirectory`)
-  com `PlatformWindows` e `PlatformLinux`.
-- [ ] **Fase 3 — Desacoplar o launcher.** Lógica de boot numa lib compartilhada
-  (bootstrap), consumível por GUI e CLI.
-- [ ] **Fase 4 — Remover dependência do CEF.** Backends CLI/GTK/Qt sobre o mesmo core.
-- [ ] **Fase 5 — Avaliar tp_process sob Proton.** Testar o que roda direto, o que precisa
-  de adaptação e o que teria de ser reimplementado.
-- [ ] **Fase 6 — CI Linux.** Ubuntu / Arch / Fedora / Steam Runtime.
-- [ ] **Fase 7 — Distribuição.** AppImage / Flatpak / tar.gz.
-- [ ] **Fase 8 — Gerenciadores de mods.** Vortex Linux / Steam / Lutris / Heroic / Bottles / PortProton.
-- [ ] **Fase 9 — Melhorias Linux.** Detecção de prefix/Steam Library, múltiplos prefixes,
-  MangoHud, Gamescope, Wayland, crash handler via coredumpctl.
+1. cria `SkyrimSE.exe` como processo real e suspenso;
+2. prepara a imagem protegida pelo Steam CEG e restaura a região descriptografada;
+3. injeta `STClientPayload.dll`;
+4. o payload encontra/aplica os hooks e sinaliza que terminou;
+5. o launcher retoma a thread principal na entry point original.
 
-## Servidor nativo no Linux (o caminho de menor risco)
+Como o payload pode ficar a mais de ±2 GiB do código do jogo, hooks `rel32` usam relay
+thunks alocados perto dos endereços-alvo.
 
-Já suportado. Duas rotas:
+## Por que o CEF foi removido do caminho Proton
 
-- **Docker** (como o CI oficial faz): ver [`Dockerfile`](../Dockerfile) e
-  [`MakeLinux.cmd`](../MakeLinux.cmd). Produz `SkyrimTogetherServer` e `libSTServer.so`.
-- **Nativo via xmake** (dev local): ver [`flake.nix`](../flake.nix) — provê `gcc14`,
-  `xmake`, `cmake`. `xmake f -p linux -a x64` + `xmake build SkyrimTogetherServer`.
+O CEF embarcado dispara `0x80000003` dentro de `libcef.dll` no Proton. Foram testados
+flags para desligar GPU/rede, SwiftShader, single-process e message pump externo, além
+de instrumentação detalhada. Eles mudaram o ponto do crash, mas não produziram uma
+inicialização estável.
 
-Alvos incluídos no Linux por [`Code/xmake.lua`](../Code/xmake.lua): `server`,
-`server_runner`, `common`, `components`, `base`, `admin_protocol`, `encoding`, `tests`.
+A decisão final é de plataforma:
 
-## Rodar o client sob Proton (esboço — a validar na Fase 5)
+- **Wine/Proton:** não inicializa CEF; usa UI ImGui sobre o hook D3D11 existente;
+- **Windows nativo:** preserva o overlay CEF upstream.
 
-1. Instalar o mod normalmente no prefixo Proton do Skyrim SE (SKSE + Address Library).
-2. Fazer o `SkyrimTogether.exe` (launcher) ser o executável lançado pelo Steam/Proton no
-   lugar do jogo (ele carrega o jogo in-process).
-3. Verificar: preload de DLLs de sistema, usvfs, CEF (tp_process), e a overlay DX11.
-4. Documentar cada ponto de falha aqui conforme testado.
+As chamadas do overlay CEF são protegidas quando seu runtime não existe. Isso evita
+que eventos posteriores de input, render ou jogo acessem objetos parcialmente
+inicializados. O histórico detalhado está em [cef-proton.md](cef-proton.md).
 
-> Ainda não validado nesta máquina. A instrumentação da Fase 1 existe justamente para
-> tornar esses pontos de falha visíveis nos logs.
+## UI ImGui
 
-## Instrumentação (Fase 1) — como usar
+O serviço nativo recebe os mesmos eventos e usa os mesmos serviços de transporte do
+cliente:
 
-O launcher aceita flags de diagnóstico (Windows e futuramente Linux):
+- conexão direta por hostname, IPv4/IPv6 e senha;
+- navegador público via `skyrim-reborn-list.skyrim-together.com/list`;
+- busca, filtros, favoritos e validação visual de versão;
+- lista de jogadores e níveis;
+- chat global em janela separada;
+- captura/liberação de DirectInput sincronizada com a visibilidade;
+- configurações persistidas em `Data/SkyrimTogetherReborn/native_overlay.json`.
 
-- `--verbose` — eleva o nível de log para `debug`.
-- `--debug` — eleva para `trace` (máximo detalhe) e força console.
-- `--dump-config` — imprime a configuração de inicialização resolvida (caminhos,
-  versão, plataforma, args) e sai sem iniciar o jogo.
+Esse conjunto cobre o caminho de jogo validado. Party/grupo e outros recursos sociais
+da interface web original ainda não foram reimplementados.
 
-Logs são escritos em `logs/` (sink rotativo) e no console, seguindo o mesmo padrão
-spdlog do servidor. Variável de ambiente equivalente: `TE_LOG_LEVEL`.
+## Compatibilidade de rede
+
+O commit Git identifica a build nos logs e recursos do executável, mas não deve ser
+usado como versão do wire protocol. O fork fixa:
+
+```cpp
+#define PROTOCOL_VERSION "v1.8.0"
+```
+
+Client e servidor usam esse valor na autenticação e na lista pública. Isso permite
+conectar a servidores vanilla `v1.8.0` sem esconder qual commit local está em uso.
+
+O alerta `non_default_install` é apenas informativo. Creations e mods adicionais ainda
+podem ser rejeitados pela política do servidor ou causar divergências em jogo.
+
+## Instrumentação
+
+O launcher aceita:
+
+- `--verbose` — log em `debug`;
+- `--debug` — log em `trace` e console;
+- `--dump-config` — imprime a configuração resolvida sem iniciar o jogo.
+
+Arquivos principais:
+
+- `logs/SkyrimTogether.log`, relativo ao diretório de trabalho do launcher;
+- `Skyrim Special Edition/logs/tp_client.log`;
+- `Data/SkyrimTogetherReborn/st_client_payload.log`;
+- `Data/SkyrimTogetherReborn/st_beginmain_diag.log`.
+
+O cliente registra endpoint, rota usada (IP direto ou resolução de nome), protocolo,
+commit, quantidade de mods e fase da autenticação. Timeouts, falha de DNS e problemas
+locais de rede são traduzidos para mensagens distintas na UI.
+
+## Build e distribuição
+
+O workflow [linux-port-playable.yml](../.github/workflows/linux-port-playable.yml)
+executa o build Windows release porque esse é o formato consumido pelo Proton. O
+pacote `str-build` já tem a estrutura correspondente ao diretório `Data`.
+
+Para o servidor nativo há duas rotas upstream:
+
+- Docker: [Dockerfile](../Dockerfile) e [MakeLinux.cmd](../MakeLinux.cmd);
+- xmake/Nix: [flake.nix](../flake.nix), seguido de
+  `xmake f -p linux -a x64` e `xmake build SkyrimTogetherServer`.
+
+Não confundir o job Windows-para-Proton com a compilação Linux nativa do servidor.
+
+## Próximos passos
+
+- testar mais versões atuais do Proton e diferentes drivers;
+- completar os recursos sociais ainda ausentes na UI ImGui;
+- automatizar um smoke test do payload além do build/link;
+- melhorar integração com Vortex, Lutris, Bottles e Steam Deck;
+- revisar a necessidade dos artefatos CEF no pacote exclusivo para Proton.
