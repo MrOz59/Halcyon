@@ -13,3 +13,11 @@ target("TPTests")
         "catch2",
         "mimalloc",
         "glm")
+
+    if is_plat("windows") then
+        add_files(
+            "windows/*.cpp",
+            "../immersive_launcher/steam/SteamCeg.cpp")
+        add_includedirs("../immersive_launcher")
+        add_packages("cryptopp")
+    end

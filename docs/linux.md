@@ -27,7 +27,7 @@ DirectInput ABI. The dedicated server has a separate native Linux path.
       recommended default;
 - [x] direct connections, the public list, favorites, players, and chat work;
 - [x] connection to a vanilla `v1.8.0` server has been confirmed;
-- [x] CI produces a playable package, symbols, and a diagnostic probe.
+- [x] CI produces a playable package and debug symbols.
 
 “Validated” describes the development environment used during this work. It is not a
 guarantee for every combination of distribution, driver, Proton version, mod manager,
@@ -50,6 +50,26 @@ Under Wine, `GameLauncherFactory` selects `ExternalProcessLauncher`:
 
 Because the payload may be more than ±2 GiB away from game code, `rel32` hooks use
 relay thunks allocated near their target addresses.
+
+### Proton 11 and high-entropy ASLR
+
+Skyrim SE declares both `DYNAMIC_BASE` and `HIGH_ENTROPY_VA`. Older Proton
+configurations observed during development placed the executable at its preferred
+`0x140000000` base, while Proton 11 may place it at a randomized high address.
+
+The external launcher reads the actual image base from the suspended process PEB and
+validates the remote DOS and PE headers against the selected executable. If the base
+differs, it parses the executable's base-relocation directory and applies supported
+`DIR64` fixups only when they target the decrypted `.text` range. The Wine loader has
+already relocated all other sections. The launcher then writes the decrypted code,
+flushes the instruction cache, restores page protection, and verifies the remote
+bytes before patching the protected entry point.
+
+For Skyrim SE `1.6.1170`, the relocation table contains no entries inside the main
+`.text` section, so a Proton 11 high-address load requires validation but no code
+fixups. Keeping the parser generic avoids reintroducing the fixed-base assumption for
+other supported executable layouts. Malformed images and unknown relocation types
+inside `.text` are rejected before the game resumes.
 
 ## Why CEF was removed from the Proton path
 
@@ -177,9 +197,25 @@ The upstream native-server build has two paths:
 Do not confuse the Windows-for-Proton job with the dedicated server's native Linux
 build.
 
+### Optional loader diagnostic
+
+`Code/linux_probe` is a historical loader/unwind diagnostic retained for targeted
+Proton investigations. It is not part of the runtime, is excluded from normal builds
+and release artifacts, and is not required to launch or use the mod.
+
+To make its two Windows PE targets available explicitly:
+
+```text
+xmake config --arch=x64 --mode=release --linux_probe=y
+xmake build LinuxProbeLoader LinuxProbePayload
+```
+
+See [Code/linux_probe/README.md](../Code/linux_probe/README.md) for its purpose and
+limitations.
+
 ## Next steps
 
-- test more current Proton versions and different drivers;
+- complete runtime validation across Proton 11 builds and different drivers;
 - validate the complete party workflow across several vanilla servers;
 - add optional UI audio/localization parity without introducing CEF;
 - automate a payload smoke test in addition to build/link validation;

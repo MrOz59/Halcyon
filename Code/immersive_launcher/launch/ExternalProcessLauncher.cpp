@@ -87,6 +87,33 @@ bool WriteRemoteExecutable(HANDLE aProcess, void* apAddress, const void* apData,
     return writeSucceeded && flushSucceeded && restoreSucceeded;
 }
 
+bool ValidateRemoteGameImage(HANDLE aProcess, uintptr_t aImageBase, const steam::CEGImageInfo& acInfo)
+{
+    IMAGE_DOS_HEADER dosHeader{};
+    SIZE_T bytesRead = 0;
+    if (!ReadProcessMemory(aProcess, reinterpret_cast<const void*>(aImageBase), &dosHeader, sizeof(dosHeader), &bytesRead) || bytesRead != sizeof(dosHeader) ||
+        dosHeader.e_magic != IMAGE_DOS_SIGNATURE || dosHeader.e_lfanew < 0 || dosHeader.e_lfanew > 1024 * 1024)
+    {
+        return false;
+    }
+
+    if (aImageBase > std::numeric_limits<uintptr_t>::max() - static_cast<uintptr_t>(dosHeader.e_lfanew))
+        return false;
+
+    IMAGE_NT_HEADERS64 ntHeaders{};
+    bytesRead = 0;
+    const uintptr_t ntHeadersAddress = aImageBase + static_cast<uintptr_t>(dosHeader.e_lfanew);
+    if (!ReadProcessMemory(aProcess, reinterpret_cast<const void*>(ntHeadersAddress), &ntHeaders, sizeof(ntHeaders), &bytesRead) || bytesRead != sizeof(ntHeaders))
+    {
+        return false;
+    }
+
+    return ntHeaders.Signature == IMAGE_NT_SIGNATURE && ntHeaders.FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64 && ntHeaders.FileHeader.NumberOfSections != 0 &&
+           ntHeaders.FileHeader.SizeOfOptionalHeader >= sizeof(IMAGE_OPTIONAL_HEADER64) && ntHeaders.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
+           ntHeaders.OptionalHeader.ImageBase == acInfo.preferredImageBase && ntHeaders.OptionalHeader.SizeOfImage == acInfo.imageSize &&
+           ntHeaders.OptionalHeader.AddressOfEntryPoint == acInfo.protectedEntryPointRva;
+}
+
 bool FindRemoteModule(HANDLE aProcess, const std::filesystem::path& acModulePath, uintptr_t& aBase, size_t& aSize)
 {
     const DWORD processId = GetProcessId(aProcess);
@@ -248,14 +275,31 @@ bool ExternalProcessLauncher::PrepareCegImage(const std::filesystem::path& acExe
     }
 
     const uintptr_t remoteImageBase = reinterpret_cast<uintptr_t>(pRemoteImageBase);
+    if (!ValidateRemoteGameImage(m_process, remoteImageBase, cegInfo))
+    {
+        spdlog::error("[launch] remote CEG image headers do not match the selected Skyrim executable");
+        return false;
+    }
+
     if (remoteImageBase != cegInfo.preferredImageBase)
     {
-        // Copiar o .text descriptografado por cima de uma imagem relocada
-        // reintroduziria endereços absolutos sem relocação. Um processo novo
-        // normalmente recebe a base preferida; se isso mudar, falhamos antes de
-        // corromper código e produzir um crash aparentemente aleatório.
-        spdlog::error("[launch] CEG image loaded at unexpected base 0x{:x} (expected 0x{:x})", remoteImageBase, cegInfo.preferredImageBase);
-        return false;
+        uint32_t appliedRelocations = 0;
+        const auto relocationResult = steam::RelocateCEGTextInPlace(reinterpret_cast<uint8_t*>(content.data()), content.size(), cegInfo, remoteImageBase, appliedRelocations);
+        if (relocationResult == steam::CEGRelocateResult::kUnsupportedRelocation)
+        {
+            spdlog::error("[launch] CEG .text contains an unsupported PE relocation type");
+            return false;
+        }
+        if (relocationResult != steam::CEGRelocateResult::kRelocated)
+        {
+            spdlog::error("[launch] failed to validate or relocate decrypted CEG code for image base 0x{:x}", remoteImageBase);
+            return false;
+        }
+
+        const uint64_t relocationDelta = remoteImageBase - cegInfo.preferredImageBase;
+        spdlog::info(
+            "[launch] CEG image relocated from 0x{:x} to 0x{:x}; applied {} .text fixups (delta 0x{:x})", cegInfo.preferredImageBase, remoteImageBase, appliedRelocations,
+            relocationDelta);
     }
 
     const uintptr_t remoteTextAddress = remoteImageBase + cegInfo.textRva;
@@ -266,6 +310,18 @@ bool ExternalProcessLauncher::PrepareCegImage(const std::filesystem::path& acExe
     if (!WriteRemoteExecutable(m_process, reinterpret_cast<void*>(remoteTextAddress), pDecryptedText, cegInfo.textSize))
     {
         spdlog::error("[launch] failed to install decrypted Steam CEG text: {}", GetLastError());
+        return false;
+    }
+
+    // Verify through an independent read before changing the protected entry
+    // point. The game remains suspended if Wine reports a successful write but
+    // the remote code does not match the decrypted image.
+    std::array<uint8_t, 16> remoteText{};
+    SIZE_T bytesRead = 0;
+    if (!ReadProcessMemory(m_process, reinterpret_cast<const void*>(remoteTextAddress), remoteText.data(), remoteText.size(), &bytesRead) || bytesRead != remoteText.size() ||
+        std::memcmp(remoteText.data(), pDecryptedText, remoteText.size()) != 0)
+    {
+        spdlog::error("[launch] Steam CEG text verification failed");
         return false;
     }
 
@@ -291,14 +347,12 @@ bool ExternalProcessLauncher::PrepareCegImage(const std::filesystem::path& acExe
         return false;
     }
 
-    // Verificação independente da API de escrita: não liberamos o jogo se o
-    // Wine reportar sucesso mas o conteúdo remoto não corresponder ao decriptado.
-    std::array<uint8_t, 16> remoteText{};
-    SIZE_T bytesRead = 0;
-    if (!ReadProcessMemory(m_process, reinterpret_cast<const void*>(remoteTextAddress), remoteText.data(), remoteText.size(), &bytesRead) || bytesRead != remoteText.size() ||
-        std::memcmp(remoteText.data(), pDecryptedText, remoteText.size()) != 0)
+    std::array<uint8_t, 5> remoteJump{};
+    bytesRead = 0;
+    if (!ReadProcessMemory(m_process, reinterpret_cast<const void*>(protectedEntryPoint), remoteJump.data(), remoteJump.size(), &bytesRead) || bytesRead != remoteJump.size() ||
+        remoteJump != jump)
     {
-        spdlog::error("[launch] Steam CEG text verification failed");
+        spdlog::error("[launch] Steam CEG entry point verification failed");
         return false;
     }
 

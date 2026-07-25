@@ -25,7 +25,6 @@ jobs:
     runs-on: windows-2022
     needs: build-windows
     steps:
-      # Keeps the linux_probe README with the diagnostic artifact.
       - uses: actions/checkout@v4
 
       - name: Download artifact from the previous job
@@ -33,25 +32,16 @@ jobs:
         with:
           name: internal-job-files
 
+      - name: Run unit tests
+        shell: pwsh
+        run: '& ".\build\windows\x64\release\TPTests.exe"'
+
       - name: Package build and organize directories
         shell: bash
         run: |
           mkdir -p str-build/SkyrimTogetherReborn
           mv build/windows/x64/release/* str-build/SkyrimTogetherReborn
           cp -r GameFiles/Skyrim/* str-build/
-
-      # Historical Linux-port diagnostic tool. Keep it in a separate artifact so
-      # the playable package stays clean. See Code/linux_probe/README.md.
-      - name: Extract linux_probe diagnostic tool
-        shell: bash
-        run: |
-          mkdir -p linux-probe
-          # Tolerate build-layout changes: a missing diagnostic probe must not
-          # fail the playable package.
-          mv str-build/SkyrimTogetherReborn/probe_loader.exe linux-probe/ || echo "probe_loader.exe not found"
-          mv str-build/SkyrimTogetherReborn/probe_payload.dll linux-probe/ || echo "probe_payload.dll not found"
-          cp Code/linux_probe/README.md linux-probe/
-          ls -la linux-probe/
 
       - name: Remove unnecessary build files, keep .pdb
         shell: bash
@@ -75,9 +65,3 @@ jobs:
         with:
           name: Debug Symbols (${{ needs.build-windows.outputs.str-version }})
           path: str-pdb/
-
-      - name: Upload linux_probe diagnostic tool
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-probe (${{ needs.build-windows.outputs.str-version }})
-          path: linux-probe/

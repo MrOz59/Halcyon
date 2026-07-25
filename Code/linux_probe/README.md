@@ -7,6 +7,16 @@ question before the external-process refactor:
 > `ExeLoader` through manual PE mapping, leaving its unwind tables invisible to
 > Wine's `RtlVirtualUnwind2`?
 
+The probe is not required to build, launch, or use Skyrim Together Reborn. Its source
+is retained only for targeted loader/unwind investigations, and its targets are
+disabled in normal builds and release workflows. To opt in on a Windows PE build
+environment:
+
+```text
+xmake config --arch=x64 --mode=release --linux_probe=y
+xmake build LinuxProbeLoader LinuxProbePayload
+```
+
 ## Hypothesis
 
 The investigation at the time, recorded in `docs/cef-proton.md` and the history of
@@ -74,9 +84,10 @@ established. The probe answered that question at low cost.
 
 ## Running the probe under Proton
 
-The binaries are Windows PE files and must come from CI because this development
-machine does not have a local PE build toolchain. Download the artifact and place both
-files together in any directory accessible from the prefix.
+The binaries are Windows PE files and must be produced in a compatible Windows build
+environment with the opt-in commands above. The regular Linux-port workflow does not
+build or publish them. Place both resulting files together in any directory
+accessible from the prefix.
 
 ```bash
 export PROTON="$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-1/proton"

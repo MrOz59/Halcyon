@@ -4,8 +4,11 @@ if is_plat("windows") then
     includes("immersive_launcher")
     includes("client_payload")
     includes("tp_process")
-    -- Ferramenta de diagnóstico do port Linux (ver Code/linux_probe/README.md).
-    includes("linux_probe")
+    if has_config("linux_probe") then
+        -- Optional loader/unwind diagnostic. It is not part of the client or
+        -- required to run the mod; see Code/linux_probe/README.md.
+        includes("linux_probe")
+    end
 end
 
 includes("common")

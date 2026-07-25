@@ -2,7 +2,6 @@
 
 #include <Services/OverlayService.h>
 
-#include "LinuxDiag.h"
 #include "Platform.h"
 
 #include <OverlayApp.hpp>
@@ -177,10 +176,6 @@ void OverlayService::Render() noexcept
 
     if (!m_pOverlay)
         return;
-
-    // Pump CEF's external message loop (see OverlayApp::Initialize). Render runs
-    // every frame and is the natural place to tick Chromium.
-    m_pOverlay->Update();
 
     m_pOverlay->GetClient()->Render();
 }

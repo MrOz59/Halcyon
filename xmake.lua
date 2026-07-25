@@ -26,6 +26,12 @@ add_vectorexts("neon")
 -- build configurations
 add_rules("mode.debug", "mode.releasedbg", "mode.release")
 
+option("linux_probe")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Build the optional Proton loader diagnostic probe")
+option_end()
+
 if has_config("unitybuild") then
     add_rules("c.unity_build")
     add_rules("c++.unity_build", {batchsize = 12})

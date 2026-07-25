@@ -86,7 +86,8 @@ CEGDecryptResult DecryptCEGInPlace(uint8_t* apImage, size_t aImageSize, CEGImage
 
     auto* pNtHeaders = reinterpret_cast<IMAGE_NT_HEADERS64*>(apImage + pDosHeader->e_lfanew);
     if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE || pNtHeaders->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
-        pNtHeaders->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
+        pNtHeaders->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 || pNtHeaders->FileHeader.NumberOfSections == 0 ||
+        pNtHeaders->FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64))
     {
         return CEGDecryptResult::kInvalidImage;
     }
@@ -116,7 +117,10 @@ CEGDecryptResult DecryptCEGInPlace(uint8_t* apImage, size_t aImageSize, CEGImage
         }
     }
 
-    if (!pTextSection || pTextSection->SizeOfRawData < sizeof(SteamStubHeaderV31::CodeSectionStolenData) || pTextSection->SizeOfRawData % AES::BLOCKSIZE != 0 ||
+    const uint32_t imageSize = pNtHeaders->OptionalHeader.SizeOfImage;
+    const uint64_t mappedTextEnd = pTextSection ? static_cast<uint64_t>(pTextSection->VirtualAddress) + pTextSection->SizeOfRawData : 0;
+    if (!pTextSection || imageSize == 0 || pNtHeaders->OptionalHeader.ImageBase == 0 || pNtHeaders->OptionalHeader.ImageBase > std::numeric_limits<uint64_t>::max() - imageSize ||
+        mappedTextEnd > imageSize || pTextSection->SizeOfRawData < sizeof(SteamStubHeaderV31::CodeSectionStolenData) || pTextSection->SizeOfRawData % AES::BLOCKSIZE != 0 ||
         !FitsInImage(pTextSection->PointerToRawData, pTextSection->SizeOfRawData, aImageSize) || entryPointOffset < sizeof(SteamStubHeaderV31))
     {
         return CEGDecryptResult::kInvalidImage;
@@ -153,8 +157,134 @@ CEGDecryptResult DecryptCEGInPlace(uint8_t* apImage, size_t aImageSize, CEGImage
     aInfo.textRva = pTextSection->VirtualAddress;
     aInfo.textFileOffset = pTextSection->PointerToRawData;
     aInfo.textSize = pTextSection->SizeOfRawData;
+    aInfo.imageSize = imageSize;
     aInfo.preferredImageBase = pNtHeaders->OptionalHeader.ImageBase;
 
     return CEGDecryptResult::kDecrypted;
+}
+
+CEGRelocateResult RelocateCEGTextInPlace(uint8_t* apImage, size_t aImageSize, const CEGImageInfo& acInfo, uint64_t aLoadedImageBase, uint32_t& aAppliedRelocations)
+{
+    aAppliedRelocations = 0;
+
+    if (!apImage || acInfo.preferredImageBase == 0 || aLoadedImageBase == 0 || acInfo.imageSize == 0 || acInfo.textSize == 0 ||
+        !FitsInImage(acInfo.textFileOffset, acInfo.textSize, aImageSize) || acInfo.preferredImageBase > std::numeric_limits<uint64_t>::max() - acInfo.imageSize ||
+        aLoadedImageBase > std::numeric_limits<uint64_t>::max() - acInfo.imageSize)
+    {
+        return CEGRelocateResult::kInvalidImage;
+    }
+
+    if (aLoadedImageBase == acInfo.preferredImageBase)
+        return CEGRelocateResult::kNotRequired;
+
+    if (!FitsInImage(0, sizeof(IMAGE_DOS_HEADER), aImageSize))
+        return CEGRelocateResult::kInvalidImage;
+
+    const auto* pDosHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(apImage);
+    if (pDosHeader->e_magic != IMAGE_DOS_SIGNATURE || pDosHeader->e_lfanew < 0 || !FitsInImage(static_cast<size_t>(pDosHeader->e_lfanew), sizeof(IMAGE_NT_HEADERS64), aImageSize))
+    {
+        return CEGRelocateResult::kInvalidImage;
+    }
+
+    const auto* pNtHeaders = reinterpret_cast<const IMAGE_NT_HEADERS64*>(apImage + pDosHeader->e_lfanew);
+    if (pNtHeaders->Signature != IMAGE_NT_SIGNATURE || pNtHeaders->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        pNtHeaders->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 || pNtHeaders->FileHeader.NumberOfSections == 0 ||
+        pNtHeaders->FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64) || pNtHeaders->OptionalHeader.ImageBase != acInfo.preferredImageBase)
+    {
+        return CEGRelocateResult::kInvalidImage;
+    }
+
+    const size_t sectionTableOffset = static_cast<size_t>(pDosHeader->e_lfanew) + offsetof(IMAGE_NT_HEADERS64, OptionalHeader) + pNtHeaders->FileHeader.SizeOfOptionalHeader;
+    const size_t sectionTableSize = static_cast<size_t>(pNtHeaders->FileHeader.NumberOfSections) * sizeof(IMAGE_SECTION_HEADER);
+    if (!FitsInImage(sectionTableOffset, sectionTableSize, aImageSize) || pNtHeaders->OptionalHeader.SizeOfImage != acInfo.imageSize ||
+        pNtHeaders->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_BASERELOC)
+    {
+        return CEGRelocateResult::kInvalidImage;
+    }
+
+    const auto& relocationDirectory = pNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    if (relocationDirectory.VirtualAddress == 0 || relocationDirectory.Size < sizeof(IMAGE_BASE_RELOCATION) ||
+        static_cast<uint64_t>(relocationDirectory.VirtualAddress) + relocationDirectory.Size > acInfo.imageSize)
+        return CEGRelocateResult::kInvalidImage;
+
+    uint32_t relocationFileOffset = 0;
+    if (!RvaToFileOffset(*pNtHeaders, relocationDirectory.VirtualAddress, relocationDirectory.Size, aImageSize, relocationFileOffset))
+        return CEGRelocateResult::kInvalidImage;
+
+    const uint64_t textStart = acInfo.textRva;
+    const uint64_t textEnd = textStart + acInfo.textSize;
+    if (textEnd > acInfo.imageSize)
+        return CEGRelocateResult::kInvalidImage;
+
+    const uint64_t relocationDelta = aLoadedImageBase - acInfo.preferredImageBase;
+    size_t cursor = relocationFileOffset;
+    const size_t directoryEnd = cursor + relocationDirectory.Size;
+
+    while (cursor < directoryEnd)
+    {
+        if (directoryEnd - cursor < sizeof(IMAGE_BASE_RELOCATION))
+            return CEGRelocateResult::kInvalidImage;
+
+        IMAGE_BASE_RELOCATION block{};
+        std::memcpy(&block, apImage + cursor, sizeof(block));
+
+        // A zero block is permitted as alignment padding at the end of the
+        // directory, but non-zero data after it would make the table ambiguous.
+        if (block.VirtualAddress == 0 && block.SizeOfBlock == 0)
+        {
+            if (std::any_of(apImage + cursor, apImage + directoryEnd, [](uint8_t aValue) { return aValue != 0; }))
+                return CEGRelocateResult::kInvalidImage;
+            break;
+        }
+
+        if (block.SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION) || block.SizeOfBlock > directoryEnd - cursor ||
+            (block.SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) % sizeof(uint16_t) != 0)
+        {
+            return CEGRelocateResult::kInvalidImage;
+        }
+
+        const size_t entryCount = (block.SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(uint16_t);
+        const size_t entriesOffset = cursor + sizeof(IMAGE_BASE_RELOCATION);
+
+        for (size_t i = 0; i < entryCount; ++i)
+        {
+            uint16_t entry = 0;
+            std::memcpy(&entry, apImage + entriesOffset + i * sizeof(entry), sizeof(entry));
+
+            const uint16_t type = entry >> 12;
+            if (type == IMAGE_REL_BASED_ABSOLUTE)
+                continue;
+
+            const uint64_t targetRva = static_cast<uint64_t>(block.VirtualAddress) + (entry & 0x0FFF);
+            if (targetRva < textStart || targetRva >= textEnd)
+                continue;
+
+            if (type != IMAGE_REL_BASED_DIR64)
+                return CEGRelocateResult::kUnsupportedRelocation;
+
+            if (targetRva + sizeof(uint64_t) > textEnd)
+                return CEGRelocateResult::kInvalidImage;
+
+            const uint64_t textOffset = targetRva - textStart;
+            if (textOffset > std::numeric_limits<size_t>::max() - acInfo.textFileOffset)
+                return CEGRelocateResult::kInvalidImage;
+
+            const size_t targetFileOffset = static_cast<size_t>(acInfo.textFileOffset + textOffset);
+            if (!FitsInImage(targetFileOffset, sizeof(uint64_t), aImageSize))
+            {
+                return CEGRelocateResult::kInvalidImage;
+            }
+
+            uint64_t value = 0;
+            std::memcpy(&value, apImage + targetFileOffset, sizeof(value));
+            value += relocationDelta;
+            std::memcpy(apImage + targetFileOffset, &value, sizeof(value));
+            ++aAppliedRelocations;
+        }
+
+        cursor += block.SizeOfBlock;
+    }
+
+    return CEGRelocateResult::kRelocated;
 }
 } // namespace steam

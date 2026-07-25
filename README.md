@@ -140,6 +140,13 @@ The payload supports the external process, applies the required patches to the g
 image, and uses relay thunks near target code for relative hooks that cannot reach the
 payload directly.
 
+Newer Proton versions can honor Skyrim's high-entropy ASLR flag and load the game far
+from its preferred `0x140000000` image base. The launcher therefore validates the
+remote PE headers obtained through the process PEB, applies supported base relocations
+that target the decrypted `.text` bytes, and only then restores and verifies that
+section. Relocations outside `.text` remain the responsibility of the Wine loader.
+Unknown image layouts or relocation types fail before the game is resumed.
+
 ### Interface and input
 
 Every CEF call is guarded when the runtime has not been initialized. The ImGui UI
@@ -204,11 +211,16 @@ Common errors:
 
 Every push to the `linux-port` branch, or a manual dispatch of
 `linux-port-playable.yml`, builds the Windows binaries in release mode and produces
-three artifacts:
+two artifacts:
 
 - `SkyrimTogether-linux-port (...)` — playable package for the `Data` directory;
-- `Debug Symbols (...)` — PDB symbols;
-- `linux-probe (...)` — historical loader diagnostic tool.
+- `Debug Symbols (...)` — PDB symbols.
+
+The historical `Code/linux_probe` loader/unwind diagnostic remains in the repository
+for targeted investigations, but it is disabled by default, is not distributed by
+the playable workflow, and is not required to run the mod. Developers can opt in
+with `xmake config --linux_probe=y` and build the `LinuxProbeLoader` and
+`LinuxProbePayload` targets explicitly.
 
 Additional technical details are available in:
 

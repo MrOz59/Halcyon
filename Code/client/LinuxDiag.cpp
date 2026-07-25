@@ -1,12 +1,19 @@
 #include <TiltedOnlinePCH.h>
 
 #include "LinuxDiag.h"
+#include "Platform.h"
 
 #include <cstdio>
 #include <filesystem>
 
 void LinuxDiagStep(const char* apStep)
 {
+    // This synchronous crash trail exists for the Proton path only. Keeping it
+    // disabled on native Windows preserves the upstream runtime behavior while
+    // retaining the diagnostics that are still useful for Wine regressions.
+    if (!IsRunningUnderWine())
+        return;
+
     static HANDLE s_hFile = INVALID_HANDLE_VALUE;
     if (s_hFile == INVALID_HANDLE_VALUE)
     {
