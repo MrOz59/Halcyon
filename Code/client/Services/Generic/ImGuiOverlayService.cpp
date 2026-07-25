@@ -1282,7 +1282,7 @@ void ImGuiOverlayService::DrawSettingsTab() noexcept
         ImGui::TextColored(SkyrimAccent(0.82f), "Press the keyboard key you want to use...");
         for (int key = VK_BACK; key <= 0xFE; ++key)
         {
-            if (!ImGui::IsKeyPressed(key, false))
+            if (!ImGui::IsKeyPressed(static_cast<ImGuiKey>(key), false))
                 continue;
 
             if (!IsAllowedChatShortcutKey(static_cast<uint32_t>(key)))
