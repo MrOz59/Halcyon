@@ -34,6 +34,7 @@ local function build_launcher()
     add_linkdirs(".")
     add_syslinks(
         "user32",
+        "comctl32",
         "shell32",
         "comdlg32",
         "bcrypt",

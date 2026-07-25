@@ -14,6 +14,7 @@
 
 #include <World.h>
 
+#include <Services/DebugService.h>
 #include <Services/OverlayClient.h>
 #include <Services/ImGuiOverlayService.h>
 #include <Services/TransportService.h>
@@ -139,11 +140,10 @@ OverlayService::~OverlayService() noexcept
 
 void OverlayService::Create(RenderSystemD3D11* apRenderSystem) noexcept
 {
-    // Sob Wine/Proton, o CefInitialize do overlay CEF bate um CHECK do Chromium
-    // (int3, 0x80000003, dentro da libcef — ver docs/cef-proton.md). O CEF é
-    // pulado aqui; o resto do multiplayer funciona sem o overlay web. m_pOverlay
-    // fica nulo e nenhum caminho pode tocar a API do CEF (nem tipos auxiliares
-    // como CefListValue), pois ela não foi inicializada. O ImGui atende o Wine.
+    // Under Wine/Proton, CefInitialize hits a Chromium CHECK (int3, 0x80000003,
+    // inside libcef; see docs/cef-proton.md). Skip CEF here and keep m_pOverlay
+    // null. No path may touch CEF APIs, including CefListValue, when the runtime
+    // was not initialized. The native ImGui overlay handles Wine.
     if (IsRunningUnderWine())
     {
         spdlog::warn("[overlay] Wine/Proton detected - skipping CEF overlay (CefInitialize crashes under Wine)");
@@ -178,8 +178,8 @@ void OverlayService::Render() noexcept
     if (!m_pOverlay)
         return;
 
-    // Bombeia o loop do CEF (external_message_pump; ver OverlayApp::Initialize).
-    // Render roda todo frame, então é o ponto natural para tickar o Chromium.
+    // Pump CEF's external message loop (see OverlayApp::Initialize). Render runs
+    // every frame and is the natural place to tick Chromium.
     m_pOverlay->Update();
 
     m_pOverlay->GetClient()->Render();
@@ -251,6 +251,8 @@ void OverlayService::SetInGame(bool aInGame) noexcept
     }
     else
     {
+        m_world.GetDebugService().SetVisible(false);
+
         if (auto* pImGuiOverlay = m_world.GetImGuiOverlayService())
             pImGuiOverlay->SetVisible(false);
 
@@ -278,6 +280,9 @@ void OverlayService::SetVersion(const std::string& acVersion)
 
 void OverlayService::SendSystemMessage(const std::string& acMessage)
 {
+    if (auto* pImGuiOverlay = m_world.GetImGuiOverlayService())
+        pImGuiOverlay->PushSystemMessage(acMessage);
+
     if (!m_pOverlay)
         return;
 

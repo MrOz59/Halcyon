@@ -1,136 +1,186 @@
-# Linux / Proton — arquitetura e estado do porte
+# Linux / Proton — port architecture and status
 
-> Documento técnico do caminho implementado na branch `linux-port`. Para instalação e
-> uso, consulte o [README](../README.md).
+> Technical documentation for the path implemented on the `linux-port` branch.
+> See the [README](../README.md) for installation and usage instructions.
 
-## Objetivo
+## Goal
 
-Fazer launcher e client do Skyrim Together Reborn funcionarem de forma confiável sob
-Wine/Proton, preservando o Windows nativo e a compatibilidade de rede com servidores
-vanilla `v1.8.0`.
+Make the Skyrim Together Reborn launcher and client work reliably under Wine/Proton
+while preserving native Windows behavior and network compatibility with vanilla
+`v1.8.0` servers.
 
-O client continua sendo código Windows injetado no `SkyrimSE.exe`; convertê-lo para ELF
-não faz parte deste porte. Proton fornece a ABI Win32, DX11 e DirectInput necessários.
-O servidor dedicado tem um caminho Linux nativo separado.
+The client remains Windows code injected into `SkyrimSE.exe`; converting it to ELF is
+outside the scope of this port. Proton provides the required Win32, DX11, and
+DirectInput ABI. The dedicated server has a separate native Linux path.
 
-## Estado validado
+## Validated status
 
-- [x] launcher detecta Wine e seleciona a estratégia externa;
-- [x] Skyrim SE `1.6.1170` chega ao menu, abre novo jogo e carrega saves;
-- [x] Steam CEG é restaurado antes da entrada original;
-- [x] payload é injetado e inicializado antes de retomar o jogo;
-- [x] hooks relativos fora de alcance usam relay thunks próximos;
-- [x] CEF não é inicializado sob Wine;
-- [x] overlay ImGui abre com `F2` e libera corretamente o input;
-- [x] conexão direta, lista pública, favoritos, jogadores e chat funcionam;
-- [x] conexão a servidor vanilla `v1.8.0` confirmada;
-- [x] CI produz pacote jogável, símbolos e probe de diagnóstico.
+- [x] the launcher detects Wine and selects the external-process strategy;
+- [x] Skyrim SE `1.6.1170` reaches the menu, starts a new game, and loads saves;
+- [x] Steam CEG is restored before the original entry point;
+- [x] the payload is injected and initialized before the game resumes;
+- [x] out-of-range relative hooks use nearby relay thunks;
+- [x] CEF is not initialized under Wine;
+- [x] the ImGui overlay opens with `F2` and releases input correctly;
+- [x] the internal ImGui debugger opens with `F3` and shares input capture safely;
+- [x] the launcher applies a persistent Proton display mode, with borderless as the
+      recommended default;
+- [x] direct connections, the public list, favorites, players, and chat work;
+- [x] connection to a vanilla `v1.8.0` server has been confirmed;
+- [x] CI produces a playable package, symbols, and a diagnostic probe.
 
-“Validado” descreve o ambiente usado durante o desenvolvimento, não uma garantia para
-todas as combinações de distribuição, driver, Proton, mod manager e load order.
+“Validated” describes the development environment used during this work. It is not a
+guarantee for every combination of distribution, driver, Proton version, mod manager,
+and load order.
 
-## Por que o launcher original falhava
+## Why the original launcher failed
 
-O caminho upstream usa `ExeLoader` para mapear a imagem do jogo dentro do processo do
-launcher. Sob Wine, as tabelas de unwind da imagem auto-mapeada não ficam visíveis ao
-`RtlVirtualUnwind2`. Exceções que o Windows normalmente desenrolaria terminavam em
-crash no início do jogo.
+The upstream path uses `ExeLoader` to map the game image inside the launcher process.
+Under Wine, the unwind tables for this self-mapped image are not visible to
+`RtlVirtualUnwind2`. Exceptions that Windows would normally unwind caused a crash
+during early game startup.
 
-Sob Wine, `GameLauncherFactory` seleciona `ExternalProcessLauncher`:
+Under Wine, `GameLauncherFactory` selects `ExternalProcessLauncher`:
 
-1. cria `SkyrimSE.exe` como processo real e suspenso;
-2. prepara a imagem protegida pelo Steam CEG e restaura a região descriptografada;
-3. injeta `STClientPayload.dll`;
-4. o payload encontra/aplica os hooks e sinaliza que terminou;
-5. o launcher retoma a thread principal na entry point original.
+1. create `SkyrimSE.exe` as a real suspended process;
+2. prepare the Steam CEG-protected image and restore its decrypted region;
+3. inject `STClientPayload.dll`;
+4. let the payload locate and apply hooks, then signal completion;
+5. resume the main thread at the original entry point.
 
-Como o payload pode ficar a mais de ±2 GiB do código do jogo, hooks `rel32` usam relay
-thunks alocados perto dos endereços-alvo.
+Because the payload may be more than ±2 GiB away from game code, `rel32` hooks use
+relay thunks allocated near their target addresses.
 
-## Por que o CEF foi removido do caminho Proton
+## Why CEF was removed from the Proton path
 
-O CEF embarcado dispara `0x80000003` dentro de `libcef.dll` no Proton. Foram testados
-flags para desligar GPU/rede, SwiftShader, single-process e message pump externo, além
-de instrumentação detalhada. Eles mudaram o ponto do crash, mas não produziram uma
-inicialização estável.
+The embedded CEF runtime raises `0x80000003` inside `libcef.dll` under Proton. The
+investigation covered flags that disabled GPU and networking, SwiftShader,
+single-process mode, an external message pump, and detailed instrumentation. These
+experiments changed where the crash occurred, but did not produce a stable startup.
 
-A decisão final é de plataforma:
+The final decision is platform-specific:
 
-- **Wine/Proton:** não inicializa CEF; usa UI ImGui sobre o hook D3D11 existente;
-- **Windows nativo:** preserva o overlay CEF upstream.
+- **Wine/Proton:** do not initialize CEF; use the ImGui UI through the existing D3D11
+  hook;
+- **native Windows:** preserve the upstream CEF overlay.
 
-As chamadas do overlay CEF são protegidas quando seu runtime não existe. Isso evita
-que eventos posteriores de input, render ou jogo acessem objetos parcialmente
-inicializados. O histórico detalhado está em [cef-proton.md](cef-proton.md).
+CEF overlay calls are guarded when its runtime is unavailable. This prevents later
+input, render, or game events from accessing partially initialized objects. The
+detailed history is recorded in [cef-proton.md](cef-proton.md).
 
-## UI ImGui
+## Proton display configuration
 
-O serviço nativo recebe os mesmos eventos e usa os mesmos serviços de transporte do
-cliente:
+The launcher leaves native Windows behavior unchanged. Under Wine/Proton,
+`DisplaySettings` presents a small native picker on first launch and stores the
+selection in the existing per-user launcher registry key. The available modes are
+borderless, fullscreen, windowed, and unchanged.
 
-- conexão direta por hostname, IPv4/IPv6 e senha;
-- navegador público via `skyrim-reborn-list.skyrim-together.com/list`;
-- busca, filtros, favoritos e validação visual de versão;
-- lista de jogadores e níveis;
-- chat global em janela separada;
-- captura/liberação de DirectInput sincronizada com a visibilidade;
-- configurações persistidas em `Data/SkyrimTogetherReborn/native_overlay.json`.
+For borderless and fullscreen, the launcher uses the current Proton desktop
+resolution. It updates only `bBorderless`, `bFull Screen`, `iSize W`, and `iSize H`
+under the `[Display]` section of:
 
-Esse conjunto cobre o caminho de jogo validado. Party/grupo e outros recursos sociais
-da interface web original ainda não foram reimplementados.
+```text
+Documents/My Games/Skyrim Special Edition/SkyrimPrefs.ini
+```
 
-## Compatibilidade de rede
+An existing preferences file is copied once to
+`SkyrimPrefs.ini.skyrim-together.bak` before modification. The picker can be hidden
+after a selection and reopened with `--configure`.
 
-O commit Git identifica a build nos logs e recursos do executável, mas não deve ser
-usado como versão do wire protocol. O fork fixa:
+## ImGui UI
+
+The native service receives the same events and uses the same client transport
+services:
+
+- direct connections by hostname, IPv4/IPv6, and password;
+- public browser through `skyrim-reborn-list.skyrim-together.com/list`;
+- search, filters, favorites, and visual version validation;
+- player names, levels, locations, health, and party state;
+- global, party, and local chat in a separate window, with timestamps and input
+  history;
+- player dialogue plus `/help`, `/global`, `/local`, `/party`, and `/settime`;
+- the `Reveal Players` action;
+- party creation, incoming and outgoing invitations, membership management,
+  leadership transfer, teleportation, and leaving;
+- transient chat/system notifications and an invite notice while the interactive
+  menu is closed;
+- a persistent party HUD with optional auto-hide, 1/3/5 second delays, four
+  anchors, and edge offsets;
+- optional compact latency, packet-loss, and bandwidth statistics;
+- an enforced ten-second `Reveal Players` cooldown;
+- configurable UI scale, HUD visibility, and access to the `F3` debugger;
+- DirectInput capture and release synchronized with visibility;
+- settings stored in `Data/SkyrimTogetherReborn/native_overlay.json`.
+
+The native implementation uses the existing client events, party service, and wire
+messages. It does not add fork-specific network messages, so these actions remain
+compatible with vanilla `v1.8.0` servers.
+
+## Network compatibility
+
+The Git commit identifies the build in logs and executable resources, but must not be
+used as the wire-protocol version. This fork defines:
 
 ```cpp
 #define PROTOCOL_VERSION "v1.8.0"
 ```
 
-Client e servidor usam esse valor na autenticação e na lista pública. Isso permite
-conectar a servidores vanilla `v1.8.0` sem esconder qual commit local está em uso.
+Both client and server use this value during authentication and public-list
+announcement. This allows the fork to connect to vanilla `v1.8.0` servers without
+hiding the local commit in use.
 
-O alerta `non_default_install` é apenas informativo. Creations e mods adicionais ainda
-podem ser rejeitados pela política do servidor ou causar divergências em jogo.
+The `non_default_install` warning is informational. Creations and additional mods can
+still be rejected by server policy or cause gameplay divergence.
 
-## Instrumentação
+## Instrumentation
 
-O launcher aceita:
+The launcher accepts:
 
-- `--verbose` — log em `debug`;
-- `--debug` — log em `trace` e console;
-- `--dump-config` — imprime a configuração resolvida sem iniciar o jogo.
+- `--verbose` — use the `debug` log level;
+- `--debug` — use the `trace` log level and show the console;
+- `--dump-config` — print the resolved configuration without starting the game;
+- `--configure` — reopen the Proton display picker;
+- `--skip-launcher-ui` — apply the saved mode without showing the picker;
+- `--display-mode=borderless|fullscreen|windowed|current` — save and apply a mode
+  without showing the picker.
 
-Arquivos principais:
+In-game UI shortcuts:
 
-- `logs/SkyrimTogether.log`, relativo ao diretório de trabalho do launcher;
+- `F2` — toggle the native multiplayer overlay;
+- `F3` — toggle the internal ImGui debugger;
+- `Esc` — close the active debug layer or overlay.
+
+Primary files:
+
+- `logs/SkyrimTogether.log`, relative to the launcher's working directory;
 - `Skyrim Special Edition/logs/tp_client.log`;
 - `Data/SkyrimTogetherReborn/st_client_payload.log`;
 - `Data/SkyrimTogetherReborn/st_beginmain_diag.log`.
 
-O cliente registra endpoint, rota usada (IP direto ou resolução de nome), protocolo,
-commit, quantidade de mods e fase da autenticação. Timeouts, falha de DNS e problemas
-locais de rede são traduzidos para mensagens distintas na UI.
+The client records the endpoint, route type (direct IP or name resolution), protocol,
+commit, loaded-mod count, and authentication stage. Timeouts, DNS failures, and local
+network problems are translated into distinct UI messages.
 
-## Build e distribuição
+## Build and distribution
 
-O workflow [linux-port-playable.yml](../.github/workflows/linux-port-playable.yml)
-executa o build Windows release porque esse é o formato consumido pelo Proton. O
-pacote `str-build` já tem a estrutura correspondente ao diretório `Data`.
+The [linux-port-playable.yml](../.github/workflows/linux-port-playable.yml) workflow
+runs a Windows release build because that is the format consumed by Proton. The
+`str-build` package already has the layout expected inside the `Data` directory.
 
-Para o servidor nativo há duas rotas upstream:
+The upstream native-server build has two paths:
 
-- Docker: [Dockerfile](../Dockerfile) e [MakeLinux.cmd](../MakeLinux.cmd);
-- xmake/Nix: [flake.nix](../flake.nix), seguido de
-  `xmake f -p linux -a x64` e `xmake build SkyrimTogetherServer`.
+- Docker: [Dockerfile](../Dockerfile) and [MakeLinux.cmd](../MakeLinux.cmd);
+- xmake/Nix: [flake.nix](../flake.nix), followed by
+  `xmake f -p linux -a x64` and `xmake build SkyrimTogetherServer`.
 
-Não confundir o job Windows-para-Proton com a compilação Linux nativa do servidor.
+Do not confuse the Windows-for-Proton job with the dedicated server's native Linux
+build.
 
-## Próximos passos
+## Next steps
 
-- testar mais versões atuais do Proton e diferentes drivers;
-- completar os recursos sociais ainda ausentes na UI ImGui;
-- automatizar um smoke test do payload além do build/link;
-- melhorar integração com Vortex, Lutris, Bottles e Steam Deck;
-- revisar a necessidade dos artefatos CEF no pacote exclusivo para Proton.
+- test more current Proton versions and different drivers;
+- validate the complete party workflow across several vanilla servers;
+- add optional UI audio/localization parity without introducing CEF;
+- automate a payload smoke test in addition to build/link validation;
+- improve integration with Vortex, Lutris, Bottles, and Steam Deck;
+- review whether CEF artifacts are needed in a Proton-only package.

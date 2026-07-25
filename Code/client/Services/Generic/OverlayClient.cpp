@@ -1,8 +1,8 @@
 #include <TiltedOnlinePCH.h>
 
 #include <OverlayRenderHandler.hpp>
-#include <DInputHook.hpp>
 
+#include <Services/InputService.h>
 #include <Services/OverlayClient.h>
 #include <Services/TransportService.h>
 
@@ -147,7 +147,7 @@ void OverlayClient::ProcessTeleportMessage(CefRefPtr<CefListValue> aEventArgs)
 
 void OverlayClient::ProcessToggleDebugUI()
 {
-    World::Get().GetDebugService().m_showDebugStuff = !World::Get().GetDebugService().m_showDebugStuff;
+    World::Get().GetDebugService().Toggle();
 }
 
 void OverlayClient::SetUIVisible(bool aVisible) noexcept
@@ -156,7 +156,7 @@ void OverlayClient::SetUIVisible(bool aVisible) noexcept
     if (!pRenderer)
         return;
 
-    TiltedPhoques::DInputHook::Get().SetEnabled(aVisible);
     World::Get().GetOverlayService().SetActive(aVisible);
     pRenderer->SetCursorVisible(aVisible);
+    InputService::RefreshInputState();
 }

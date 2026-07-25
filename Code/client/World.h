@@ -31,7 +31,7 @@ struct World : entt::registry
     const CharacterService& GetCharacterService() const noexcept { return ctx().at<const CharacterService>(); }
     OverlayService& GetOverlayService() noexcept { return ctx().at<OverlayService>(); }
     const OverlayService& GetOverlayService() const noexcept { return ctx().at<const OverlayService>(); }
-    // Só existe sob Wine/Proton (substitui o overlay CEF); nulo no Windows.
+    // Exists only under Wine/Proton as the CEF replacement; null on Windows.
     ImGuiOverlayService* GetImGuiOverlayService() noexcept { return ctx().find<ImGuiOverlayService>(); }
     DebugService& GetDebugService() noexcept { return ctx().at<DebugService>(); }
     const DebugService& GetDebugService() const noexcept { return ctx().at<const DebugService>(); }

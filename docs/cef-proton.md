@@ -1,92 +1,98 @@
-# CEF sob Proton/Wine — diagnóstico e decisão implementada
+# CEF under Proton/Wine — diagnosis and implemented decision
 
-> Registro técnico do bloqueio que levou à UI ImGui. A conclusão atual é: **CEF não é
-> inicializado sob Wine/Proton**. No Windows nativo, o caminho upstream é preservado.
+> Technical record of the blocker that led to the ImGui UI. The current conclusion
+> is: **CEF is not initialized under Wine/Proton**. The native Windows path is
+> preserved.
 
-## Sintoma observado
+## Observed symptom
 
-Depois que o loader e o payload passaram a iniciar o jogo, o processo ainda encerrava
-com exceções como:
+After the loader and payload were able to start the game, the process still exited
+with exceptions such as:
 
 ```text
-0x80000003 em libcef.dll
+0x80000003 in libcef.dll
 VectoredExceptionHandler: crash occurred
 ```
 
-Os endereços mudavam entre execuções, mas permaneciam dentro de `libcef.dll`. Em
-algumas tentativas o CEF chegava mais longe antes do `int3`; em outras, a exceção
-acontecia durante `CefInitialize` ou criação do browser.
+Addresses changed between runs but remained inside `libcef.dll`. In some attempts CEF
+progressed further before the `int3`; in others, the exception occurred during
+`CefInitialize` or browser creation.
 
-## Hipótese inicial
+## Initial hypothesis
 
-O overlay usa `CefRenderHandler::OnPaint` e copia por CPU o buffer do CEF para uma
-textura D3D11. Portanto, ele não precisa de `OnAcceleratedPaint`. A primeira hipótese
-foi que o Chromium inicializava ANGLE/GPU desnecessariamente sob Wine e falhava no
-pipeline que envolve `D3DCompiler_47.dll`.
+The overlay uses `CefRenderHandler::OnPaint` and copies the CEF buffer to a D3D11
+texture on the CPU. It therefore does not require `OnAcceleratedPaint`. The initial
+hypothesis was that Chromium unnecessarily initialized ANGLE/GPU under Wine and
+failed in the pipeline involving `D3DCompiler_47.dll`.
 
-Foram avaliados ou implementados experimentalmente:
+The following options were evaluated or implemented experimentally:
 
-- `--disable-gpu` e `--disable-gpu-compositing`;
-- renderização por software/SwiftShader;
-- desligamento de recursos de rede do Chromium;
+- `--disable-gpu` and `--disable-gpu-compositing`;
+- software rendering/SwiftShader;
+- disabling Chromium networking features;
 - `single-process`;
 - `external_message_pump`;
-- resolução explícita dos diretórios de recursos do CEF;
-- logs e marcadores antes/depois de `CefInitialize` e `CreateBrowser`;
-- carregamento isolado de `libcef.dll` e handlers de diagnóstico.
+- explicit resolution of CEF resource directories;
+- logs and markers around `CefInitialize` and `CreateBrowser`;
+- isolated `libcef.dll` loading and diagnostic handlers.
 
-Essas tentativas foram importantes para separar o crash do loader, do payload e do
-loop do jogo. Nenhuma tornou o CEF confiável no ambiente Proton testado.
+These experiments were important for separating loader, payload, and game-loop
+crashes. None made CEF reliable in the tested Proton environment.
 
-## Decisão
+## Decision
 
-O projeto já possuía renderer ImGui sobre D3D11 para ferramentas internas. Reusar essa
-infraestrutura é menor e mais previsível do que manter um runtime Chromium completo
-dentro do processo do Skyrim sob Wine.
+The project already had an ImGui renderer over D3D11 for internal tools. Reusing this
+infrastructure is smaller and more predictable than maintaining an entire Chromium
+runtime inside the Skyrim process under Wine.
 
-Quando Wine é detectado:
+When Wine is detected:
 
-1. `OverlayService` não cria o runtime CEF;
-2. eventos que normalmente chamariam CEF verificam se ele foi inicializado;
-3. `ImGuiOverlayService` fornece conexão, servidores públicos, jogadores e chat;
-4. `InputService` direciona teclado/mouse para ImGui apenas enquanto a UI está aberta;
-5. fechar com `F2` ou `Esc` devolve o input ao jogo.
+1. `OverlayService` does not create the CEF runtime;
+2. events that would normally call CEF verify that it was initialized;
+3. `ImGuiOverlayService` provides connections, public servers, players, chat,
+   party management, invitations, and the persistent party HUD;
+4. `InputService` routes keyboard and mouse input to ImGui only while the UI is open;
+5. closing with `F2` or `Esc` returns input to the game.
 
-No Windows nativo, a implementação CEF original continua sendo construída e usada.
-Por isso, dependências e recursos CEF ainda podem estar presentes no artefato geral,
-embora o caminho Proton não os carregue.
+On native Windows, the original CEF implementation is still built and used. CEF
+dependencies and resources may therefore remain in the general artifact even though
+the Proton path does not load them.
 
-## Resultado
+## Result
 
-Com o CEF fora do caminho Wine:
+With CEF removed from the Wine path:
 
-- novo jogo e saves antigos carregaram sem o `int3` de `libcef.dll`;
-- o overlay abriu dentro do jogo e liberou corretamente o input;
-- a lista pública e a autenticação em servidor vanilla `v1.8.0` funcionaram;
-- chat e lista de jogadores passaram a usar diretamente os serviços do client.
+- new games and existing saves loaded without the `libcef.dll` `int3`;
+- the overlay appeared in-game and released input correctly;
+- the public list and authentication against a vanilla `v1.8.0` server worked;
+- chat, the player list, and party actions used existing client services and
+  vanilla protocol messages directly.
 
-Esse resultado confirma a decisão para o fork, mas não prova que o CEF seja impossível
-de executar em toda versão de Wine. Ele apenas não é mais uma dependência funcional do
-cliente Linux/Proton.
+This result supports the decision for this fork, but does not prove that CEF cannot
+run under every Wine version. It is simply no longer a functional dependency of the
+Linux/Proton client.
 
-## Escopo ainda não migrado
+## Native UI scope
 
-A UI ImGui atual cobre o caminho essencial de multiplayer. Recursos sociais mais
-complexos da UI TypeScript/CEF, principalmente party/grupo, ainda precisam ser
-reimplementados para paridade completa.
+The current ImGui UI covers the multiplayer and social actions used by the
+TypeScript/CEF UI, including chat channels, party invitations and management,
+teleportation, player reveal, time commands, notifications, chat history, compact
+network statistics, and configurable party HUD behavior. CEF-specific audio,
+localization, transitions, and animations are intentionally not part of the native
+implementation.
 
-O código em `Code/skyrim_ui`, `Code/tp_process` e `Libraries/TiltedUI` permanece
-necessário para o build Windows nativo e como referência de comportamento.
+The code in `Code/skyrim_ui`, `Code/tp_process`, and `Libraries/TiltedUI` remains
+necessary for the native Windows build and as a behavioral reference.
 
-## Diagnóstico futuro
+## Future diagnostics
 
-Se um crash sob Proton voltar a apontar para CEF, primeiro confirme no log que a build
-realmente detectou Wine e exibiu a decisão de pular o overlay CEF. Uma carga de
-`libcef.dll` nesse caminho indica regressão ou DLL externa; não deve ser tratada apenas
-com mais flags do Chromium.
+If a Proton crash points to CEF again, first confirm in the log that the build detected
+Wine and reported that it skipped the CEF overlay. A `libcef.dll` load on this path
+indicates a regression or an external DLL and should not be treated merely by adding
+more Chromium flags.
 
-Consulte também:
+See also:
 
-- [estado do porte](linux.md);
-- [arquitetura geral](architecture.md);
-- [README de instalação](../README.md).
+- [port status](linux.md);
+- [overall architecture](architecture.md);
+- [installation README](../README.md).

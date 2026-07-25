@@ -9,6 +9,7 @@
 
 #include <Services/ImguiService.h>
 #include <Services/DebugService.h>
+#include <Services/InputService.h>
 #include <Services/TransportService.h>
 #include <Services/PapyrusService.h>
 #include <Services/QuestService.h>
@@ -108,6 +109,22 @@ DebugService::DebugService(entt::dispatcher& aDispatcher, World& aWorld, Transpo
     m_dispatcher.sink<MoveActorEvent>().connect<&DebugService::OnMoveActor>(this);
 }
 
+void DebugService::Toggle() noexcept
+{
+    SetVisible(!m_showDebugStuff);
+}
+
+void DebugService::SetVisible(bool aVisible) noexcept
+{
+    if (m_showDebugStuff != aVisible)
+    {
+        m_showDebugStuff = aVisible;
+        spdlog::info("[debug-ui] {}", m_showDebugStuff ? "opened" : "closed");
+    }
+
+    InputService::RefreshInputState();
+}
+
 void DebugService::OnDialogue(const DialogueEvent& acEvent) noexcept
 {
     if (ActorID)
@@ -164,11 +181,6 @@ void DebugService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
     static std::atomic<bool> s_f8Pressed = false;
     static std::atomic<bool> s_f7Pressed = false;
     static std::atomic<bool> s_f6Pressed = false;
-
-    if (GetAsyncKeyState(VK_F3) & 0x01)
-    {
-        m_showDebugStuff = !m_showDebugStuff;
-    }
 
 #if (!IS_MASTER)
     if (GetAsyncKeyState(VK_F6))
@@ -263,8 +275,7 @@ void DebugService::DrawServerView() noexcept
 
 void DebugService::OnDraw() noexcept
 {
-    const auto view = m_world.view<FormIdComponent>();
-    if (view.empty() || !m_showDebugStuff)
+    if (!m_showDebugStuff)
         return;
 
     ImGui::BeginMainMenuBar();

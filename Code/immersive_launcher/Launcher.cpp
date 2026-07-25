@@ -19,11 +19,11 @@
 #include "base/dialogues/win/TaskDialog.h"
 #include "utils/Registry.h"
 #include "Instrumentation.h"
+#include "DisplaySettings.h"
 
 #include <spdlog/spdlog.h>
 
 #include <BranchInfo.h>
-
 
 // Defined in EarlyLoad.dll
 bool __declspec(dllimport) EarlyInstallSucceeded();
@@ -120,13 +120,22 @@ int StartUp(int argc, char** argv)
     // a configuração. Com --dump-config, encerra aqui sem iniciar o jogo.
     {
         const auto diagOptions = instrumentation::ParseOptions(argc, argv);
-        const auto toStr = [](const std::filesystem::path& p) { return TiltedPhoques::String(p.string()); };
+        const auto toStr = [](const std::filesystem::path& p)
+        {
+            return TiltedPhoques::String(p.string());
+        };
         instrumentation::DumpConfig(diagOptions, toStr(LC->exePath), toStr(LC->gamePath), LC->Version);
         if (diagOptions.dumpConfig)
         {
             spdlog::info("--dump-config specified; exiting before game start.");
             return 0;
         }
+    }
+
+    if (!display::Configure(argc, argv))
+    {
+        spdlog::info("[display] launch cancelled by user");
+        return 0;
     }
 
     // Sob Wine/Proton o mapeamento manual de PE não é utilizável (as unwind tables

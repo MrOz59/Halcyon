@@ -28,6 +28,7 @@ struct PartyService
     const Vector<uint32_t>& GetPartyMembers() const noexcept { return m_partyMembers; }
     const Map<uint32_t, String>& GetPlayers() const noexcept { return m_players; }
     Map<uint32_t, uint64_t>& GetInvitations() noexcept { return m_invitations; }
+    const Map<uint32_t, uint64_t>& GetInvitations() const noexcept { return m_invitations; }
 
     void CreateParty() const noexcept;
     void LeaveParty() const noexcept;
@@ -54,7 +55,7 @@ private:
 
     bool m_inParty = false;
     bool m_isLeader = false;
-    uint32_t m_leaderPlayerId;
+    uint32_t m_leaderPlayerId{};
     Vector<uint32_t> m_partyMembers;
 
     World& m_world;

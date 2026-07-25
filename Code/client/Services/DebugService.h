@@ -28,6 +28,10 @@ struct DebugService
     void OnSubtitle(const SubtitleEvent&) noexcept;
     void OnMoveActor(const MoveActorEvent&) noexcept;
 
+    void Toggle() noexcept;
+    void SetVisible(bool aVisible) noexcept;
+    [[nodiscard]] bool IsVisible() const noexcept { return m_showDebugStuff; }
+
     void SetDebugId(const uint32_t aFormId) noexcept;
 
     static void ArrangeGameWindows(HWND aThisWindow) noexcept;
@@ -65,9 +69,6 @@ private:
     void DrawCalendarView();
     void DrawDragonSpawnerView();
 
-public:
-    bool m_showDebugStuff = false;
-
 private:
     entt::dispatcher& m_dispatcher;
     TransportService& m_transport;
@@ -87,6 +88,7 @@ private:
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_drawImGuiConnection;
     entt::scoped_connection m_dialogueConnection;
+    bool m_showDebugStuff = false;
     bool m_showBuildTag = true;
     bool m_drawComponentsInWorldSpace = false;
 };

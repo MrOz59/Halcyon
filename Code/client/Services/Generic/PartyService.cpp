@@ -102,6 +102,9 @@ void PartyService::OnUpdate(const UpdateEvent& acEvent) noexcept
 void PartyService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
     DestroyParty();
+    m_players.clear();
+    m_invitations.clear();
+    m_nextUpdate = 0;
 }
 
 void PartyService::OnPlayerList(const NotifyPlayerList& acPlayerList) noexcept
@@ -165,6 +168,7 @@ void PartyService::OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcep
     m_isLeader = acPartyJoined.IsLeader;
     m_leaderPlayerId = acPartyJoined.LeaderPlayerId;
     m_partyMembers = acPartyJoined.PlayerIds;
+    m_invitations.clear();
 
     m_world.GetDispatcher().trigger(PartyJoinedEvent(m_isLeader));
 }
@@ -182,6 +186,6 @@ void PartyService::DestroyParty() noexcept
 {
     m_inParty = false;
     m_isLeader = false;
-    m_leaderPlayerId = -1;
+    m_leaderPlayerId = 0;
     m_partyMembers.clear();
 }

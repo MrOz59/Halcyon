@@ -43,8 +43,8 @@ World::World()
     ctx().emplace<CharacterService>(*this, m_dispatcher, m_transport);
     ctx().emplace<DebugService>(m_dispatcher, *this, m_transport, ctx().at<ImguiService>());
 
-    // Sob Wine/Proton o overlay CEF é pulado (CefInitialize crasha; ver
-    // OverlayService::Create), então registramos o overlay ImGui nativo no lugar.
+    // Under Wine/Proton CEF is skipped because CefInitialize crashes (see
+    // OverlayService::Create), so register the native ImGui overlay instead.
     if (IsRunningUnderWine())
         ctx().emplace<ImGuiOverlayService>(*this, m_transport, m_dispatcher, ctx().at<ImguiService>());
 

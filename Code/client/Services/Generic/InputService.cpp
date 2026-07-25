@@ -10,6 +10,7 @@
 #include <WindowsHook.hpp>
 
 #include <include/internal/cef_types.h>
+#include <Services/DebugService.h>
 #include <Services/ImguiService.h>
 #include <Services/DiscordService.h>
 #include <World.h>
@@ -87,10 +88,15 @@ uint32_t GetCefModifiers(uint16_t aVirtualKey)
     return modifiers;
 }
 
-// remember to update this when updating toggle keys
-bool IsToggleKey(int aKey) noexcept
+// Remember to update DInputHook::SetToggleKeys when changing these shortcuts.
+bool IsOverlayToggleKey(int aKey) noexcept
 {
     return aKey == VK_RCONTROL || aKey == VK_F2;
+}
+
+bool IsDebugToggleKey(int aKey) noexcept
+{
+    return aKey == VK_F3;
 }
 
 bool IsDisableKey(int aKey) noexcept
@@ -98,21 +104,51 @@ bool IsDisableKey(int aKey) noexcept
     return aKey == VK_ESCAPE;
 }
 
+void InputService::RefreshInputState() noexcept
+{
+    if (!s_pOverlay)
+        return;
+
+    auto& world = World::Get();
+    const bool debugVisible = world.GetDebugService().IsVisible();
+    const auto* pNativeOverlay = world.GetImGuiOverlayService();
+    const bool regularUiVisible = pNativeOverlay ? pNativeOverlay->IsVisible() : s_pOverlay->GetActive();
+    const bool inputActive = regularUiVisible || debugVisible;
+
+    // Re-registering the raw input devices while the overlay already owns input
+    // can make ImGui lose the active text field, especially when Wine sends
+    // WM_SETFOCUS after a mouse click. Only touch the hook when ownership
+    // actually changes.
+    auto& inputHook = TiltedPhoques::DInputHook::Get();
+    if (inputHook.IsEnabled() != inputActive)
+        inputHook.SetEnabled(inputActive);
+
+    // The Proton path and the standalone F3 debugger use the system cursor.
+    // Native CEF draws its own cursor while active, so keep the system one hidden.
+    const bool showSystemCursor = inputActive && (pNativeOverlay || !s_pOverlay->GetActive());
+    if (showSystemCursor)
+    {
+        while (ShowCursor(TRUE) < 0)
+            ;
+    }
+    else
+    {
+        while (ShowCursor(FALSE) >= 0)
+            ;
+    }
+}
+
 void SetUIActive(OverlayService& aOverlay, auto apRenderer, bool aActive)
 {
-    TiltedPhoques::DInputHook::Get().SetEnabled(aActive);
     aOverlay.SetActive(aActive);
 
     // Ensures the game is actually loaded, in case the initial event was sent too early
     aOverlay.SetVersion(BUILD_COMMIT);
-    if (auto* pApp = aOverlay.GetOverlayApp()) // nulo sob Wine (CEF pulado)
+    if (auto* pApp = aOverlay.GetOverlayApp()) // Null under Wine because CEF is skipped.
         pApp->ExecuteAsync("enterGame");
 
     apRenderer->SetCursorVisible(aActive);
-
-    // This is to disable the Windows cursor
-    while (ShowCursor(FALSE) >= 0)
-        ;
+    InputService::RefreshInputState();
 }
 
 void ProcessKeyboard(uint16_t aKey, uint16_t aScanCode, cef_key_event_type_t aType, bool aE0, bool aE1)
@@ -176,15 +212,33 @@ void ProcessKeyboard(uint16_t aKey, uint16_t aScanCode, cef_key_event_type_t aTy
     }
 
     auto& overlay = *s_pOverlay;
+    auto& debugUi = World::Get().GetDebugService();
 
-    // Sob Wine/Proton não há overlay CEF; a toggle key (F2) alterna o overlay
-    // ImGui nativo. DInput captura o teclado já no keydown, então sempre
-    // reconciliamos o estado quando a tecla chega fora do jogo para não deixar
-    // teclado/mouse presos.
+    if (aType != KEYEVENT_CHAR && IsDebugToggleKey(aKey))
+    {
+        if (!overlay.GetInGame())
+            debugUi.SetVisible(false);
+        else if (aType == KEYEVENT_KEYUP)
+            debugUi.Toggle();
+
+        return;
+    }
+
+    if (aType != KEYEVENT_CHAR && IsDisableKey(aKey) && debugUi.IsVisible())
+    {
+        if (aType == KEYEVENT_KEYUP)
+            debugUi.SetVisible(false);
+
+        return;
+    }
+
+    // Wine/Proton has no CEF overlay, so F2 toggles the native ImGui UI. DInput
+    // captures the keyboard on keydown; always reconcile state when the key
+    // reaches this path so keyboard and mouse cannot remain captured.
     if (auto* pImGuiOverlay = World::Get().GetImGuiOverlayService())
     {
         const bool uiVisible = pImGuiOverlay->IsVisible();
-        const bool isToggle = IsToggleKey(aKey);
+        const bool isToggle = IsOverlayToggleKey(aKey);
         const bool isClose = IsDisableKey(aKey) && uiVisible;
 
         if (aType != KEYEVENT_CHAR && (isToggle || isClose))
@@ -202,7 +256,7 @@ void ProcessKeyboard(uint16_t aKey, uint16_t aScanCode, cef_key_event_type_t aTy
             }
         }
 
-        return; // sem CEF: nada mais a rotear pelo caminho do browser
+        return; // No CEF browser exists on this path.
     }
 
     const auto pApp = overlay.GetOverlayApp();
@@ -221,7 +275,7 @@ void ProcessKeyboard(uint16_t aKey, uint16_t aScanCode, cef_key_event_type_t aTy
 
     spdlog::debug("ProcessKey, type: {}, key: {}, active: {}", aType, aKey, active);
 
-    if (aType != KEYEVENT_CHAR && (IsToggleKey(aKey) || (IsDisableKey(aKey) && active)))
+    if (aType != KEYEVENT_CHAR && (IsOverlayToggleKey(aKey) || (IsDisableKey(aKey) && active)))
     {
         if (!overlay.GetInGame())
         {
@@ -330,16 +384,16 @@ UINT GetRealACP()
 
 LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    // Sob Wine/Proton não há overlay CEF; quando o overlay ImGui está visível,
-    // encaminhamos os eventos de janela direto para o ImGui_ImplWin32. Também
-    // precisamos continuar processando WM_INPUT: é por esse evento que o keyup
-    // do F2 chega depois que DInput captura o teclado.
+    // Under Wine/Proton there is no CEF overlay. Forward window events to ImGui
+    // whenever either the F2 overlay or the F3 debugger is visible. WM_INPUT must
+    // remain active because it delivers the toggle keyup after DInput captures the
+    // keyboard.
     if (auto* pImGuiOverlay = World::Get().GetImGuiOverlayService())
     {
-        const bool uiVisible = pImGuiOverlay->IsVisible();
+        const bool imguiInputActive = pImGuiOverlay->IsVisible() || World::Get().GetDebugService().IsVisible();
         auto& imgui = World::Get().ctx().at<ImguiService>();
 
-        if (uiVisible)
+        if (imguiInputActive)
             imgui.WndProcHandler(hwnd, uMsg, wParam, lParam);
 
         if (uMsg == WM_INPUT)
@@ -350,7 +404,7 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 
             if (result != static_cast<UINT>(-1))
             {
-                if (uiVisible)
+                if (imguiInputActive)
                     imgui.RawInputHandler(input);
 
                 if (input.header.dwType == RIM_TYPEKEYBOARD)
@@ -362,11 +416,10 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
                 }
             }
         }
-        else if (uMsg == WM_SETFOCUS && uiVisible)
+        else if (uMsg == WM_SETFOCUS && imguiInputActive)
         {
-            // O Wine pode perder o registro de raw input ao trocar de janela.
-            // Reaplicar o estado restaura a captura apenas se a UI está aberta.
-            pImGuiOverlay->SetVisible(true);
+            // Wine can lose raw-input registration while focus changes.
+            InputService::RefreshInputState();
         }
         else if (uMsg == WM_INPUTLANGCHANGE)
         {
@@ -393,7 +446,8 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     discord.WndProcHandler(hwnd, uMsg, wParam, lParam);
 
     const bool active = s_pOverlay->GetActive();
-    if (active)
+    const bool imguiInputActive = active || World::Get().GetDebugService().IsVisible();
+    if (imguiInputActive)
     {
         auto& imgui = World::Get().ctx().at<ImguiService>();
         imgui.WndProcHandler(hwnd, uMsg, wParam, lParam);
@@ -413,7 +467,7 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 
         GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, &input, &size, sizeof(RAWINPUTHEADER));
 
-        if (active)
+        if (imguiInputActive)
         {
             auto& imgui = World::Get().ctx().at<ImguiService>();
             imgui.RawInputHandler(input);
@@ -479,11 +533,15 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     }
     // If the player tabs out/in with UI visible, this WndProc doesn't run during mouse or keyboard events.
     // When player tabs in, force the UI state
-    else if (uMsg == WM_SETFOCUS && s_pOverlay->GetActive())
+    else if (uMsg == WM_SETFOCUS && imguiInputActive)
     {
-        TiltedPhoques::DInputHook::Get().SetEnabled(true);
-        s_pOverlay->SetActive(true);
-        pRenderer->SetCursorVisible(true);
+        if (active)
+        {
+            s_pOverlay->SetActive(true);
+            pRenderer->SetCursorVisible(true);
+        }
+
+        InputService::RefreshInputState();
     }
     else if (uMsg == WM_INPUTLANGCHANGE)
     {

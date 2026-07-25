@@ -1,11 +1,12 @@
 name: Linux-port playable build
 
-# Gera uma build jogável do Skyrim Together (Windows PE, para rodar sob Proton)
-# a partir da branch linux-port, incluindo a correção do CEF para Wine/Proton.
-# Dispara manualmente (workflow_dispatch) e a cada push na branch linux-port.
+# Produces a playable Skyrim Together build (Windows PE, run through Proton)
+# from the linux-port branch, including the Wine/Proton CEF replacement.
+# Runs manually (workflow_dispatch) and after each push to linux-port.
 #
-# O binário resultante é Windows: o launcher/client é injetado no SkyrimSE.exe e
-# roda dentro do prefixo Proton. Não há build ELF nativo do client (ver docs/linux.md).
+# The resulting binary remains a Windows executable: the launcher/client is
+# injected into SkyrimSE.exe and runs inside the Proton prefix. There is no native
+# ELF client build (see docs/linux.md).
 
 on:
   workflow_dispatch:
@@ -24,7 +25,7 @@ jobs:
     runs-on: windows-2022
     needs: build-windows
     steps:
-      # Necessário para o README do linux_probe acompanhar o artifact de diagnóstico.
+      # Keeps the linux_probe README with the diagnostic artifact.
       - uses: actions/checkout@v4
 
       - name: Download artifact from the previous job
@@ -39,14 +40,14 @@ jobs:
           mv build/windows/x64/release/* str-build/SkyrimTogetherReborn
           cp -r GameFiles/Skyrim/* str-build/
 
-      # Ferramenta de diagnóstico do port Linux; sai como artifact separado para
-      # não poluir a build jogável. Ver Code/linux_probe/README.md.
+      # Historical Linux-port diagnostic tool. Keep it in a separate artifact so
+      # the playable package stays clean. See Code/linux_probe/README.md.
       - name: Extract linux_probe diagnostic tool
         shell: bash
         run: |
           mkdir -p linux-probe
-          # Tolerante a mudanças de layout do build: o probe é diagnóstico e não
-          # deve derrubar o job da build jogável se não for encontrado.
+          # Tolerate build-layout changes: a missing diagnostic probe must not
+          # fail the playable package.
           mv str-build/SkyrimTogetherReborn/probe_loader.exe linux-probe/ || echo "probe_loader.exe not found"
           mv str-build/SkyrimTogetherReborn/probe_payload.dll linux-probe/ || echo "probe_payload.dll not found"
           cp Code/linux_probe/README.md linux-probe/

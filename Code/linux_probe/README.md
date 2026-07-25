@@ -1,30 +1,30 @@
-# linux_probe — validação da hipótese de unwind sob Proton
+# linux_probe — validating the Proton unwind hypothesis
 
-Ferramenta de **diagnóstico**, não parte do produto. Existe para responder a uma
-única pergunta antes de qualquer refactor:
+This is a **diagnostic tool**, not part of the product. It was created to answer one
+question before the external-process refactor:
 
-> O crash do Skyrim sob Proton acontece porque o `SkyrimSE.exe` é **auto-mapeado**
-> pelo `ExeLoader` (mapeamento manual de PE), deixando as unwind tables invisíveis
-> para o `RtlVirtualUnwind2` do Wine?
+> Did Skyrim crash under Proton because `SkyrimSE.exe` was **self-mapped** by
+> `ExeLoader` through manual PE mapping, leaving its unwind tables invisible to
+> Wine's `RtlVirtualUnwind2`?
 
-## A hipótese
+## Hypothesis
 
-O diagnóstico atual (ver `docs/cef-proton.md` e o histórico da branch `linux-port`)
-aponta para o seguinte encadeamento:
+The investigation at the time, recorded in `docs/cef-proton.md` and the history of
+the `linux-port` branch, identified this sequence:
 
-1. Dentro de `gameMain()` o Skyrim nomeia threads via o mecanismo legado do MSVC,
+1. Inside `gameMain()`, Skyrim names threads through the legacy MSVC mechanism:
    `RaiseException(0x406D1388)` = `EXCEPTION_WINE_NAME_THREAD`.
-2. No Windows com debugger isso é absorvido. Sob Wine sem debugger a exceção é
-   despachada de verdade.
-3. Um vectored handler dentro do jogo retorna `EXCEPTION_CONTINUE_SEARCH`, então o
-   `RtlVirtualUnwind2` percorre a stack e entra no código auto-mapeado (base
-   `0x140000000`).
-4. Lá ele não encontra unwind info utilizável — segue RIPs inválidos (`0`, `0x1000`,
-   `0x19c`) — e a cascata termina em SIGFPE (exit code 136).
+2. Windows absorbs this when a debugger is attached. Under Wine without a debugger,
+   the exception is actually dispatched.
+3. A vectored handler inside the game returns `EXCEPTION_CONTINUE_SEARCH`, so
+   `RtlVirtualUnwind2` walks the stack and enters self-mapped code at base
+   `0x140000000`.
+4. It cannot find usable unwind information there, follows invalid RIP values (`0`,
+   `0x1000`, `0x19c`), and the cascade ends in SIGFPE with exit code 136.
 
-A causa fundamental não é a exceção `0x406D1388` em si: é que **a exception/unwind
-table de um módulo auto-mapeado não é registrada do jeito que o Wine precisa**. O
-próprio `ExeLoader.cpp` reconhece isso:
+The root cause was not exception `0x406D1388` itself. The exception/unwind table for a
+self-mapped module was not registered in the form required by Wine. `ExeLoader.cpp`
+acknowledged this limitation:
 
 ```cpp
 // has no use - inverted function tables get used instead from Ldr;
@@ -32,53 +32,51 @@ próprio `ExeLoader.cpp` reconhece isso:
 RtlAddFunctionTable(...);
 ```
 
-`RtlAddFunctionTable` registra uma tabela *dinâmica*, que é a segunda escolha do
-lookup. A primeira é a tabela do módulo carregado pelo loader
-(`LdrpInvertedFunctionTable`), que nunca é populada para uma região de memória que
-o loader não conhece como imagem.
+`RtlAddFunctionTable` registers a dynamic table, which is the second lookup choice.
+The first is the loaded module table (`LdrpInvertedFunctionTable`), which is never
+populated for a memory region that the loader does not recognize as an image.
 
-Consumir a exceção `0x406D1388` num vectored handler removeria apenas **um**
-gatilho. O Skyrim, o CRT e o D3D lançam SEH legítimo em outros pontos, e cada um
-deles reencontraria o mesmo unwind quebrado. Por isso a hipótese a testar é a
-estrutural, não o paliativo.
+Consuming `0x406D1388` in a vectored handler would remove only one trigger. Skyrim,
+the CRT, and D3D raise legitimate SEH exceptions elsewhere, and each would encounter
+the same broken unwind path. The probe therefore tested the structural hypothesis
+rather than that workaround.
 
-## O que este probe faz
+## What the probe does
 
-Se a hipótese estiver certa, deixar o **loader do Wine** carregar o
-`SkyrimSE.exe` (via `CreateProcess` normal) faz o problema desaparecer, porque o
-Wine popula as estruturas de imagem ele mesmo. O probe monta exatamente esse
-cenário, no menor tamanho possível:
+If the hypothesis was correct, allowing the **Wine loader** to load `SkyrimSE.exe`
+through a normal `CreateProcess` call would solve the problem because Wine would
+populate its own image structures. The probe creates exactly that minimal scenario:
 
-- `probe_loader.exe` — cria o `SkyrimSE.exe` **suspenso**, injeta
-  `probe_payload.dll` via `CreateRemoteThread`+`LoadLibraryW`, e dá `ResumeThread`.
-  É a mesma janela de execução que o SKSE usa: a DLL roda antes do entry point do
-  jogo.
-- `probe_payload.dll` — **não** carrega o client do STR nem instala hooks. Só
-  instala um vectored exception handler que loga toda exceção despachada (com
-  código, endereço e módulo) e devolve `EXCEPTION_CONTINUE_SEARCH`, sem alterar o
-  comportamento. Puro observador.
+- `probe_loader.exe` — creates `SkyrimSE.exe` **suspended**, injects
+  `probe_payload.dll` through `CreateRemoteThread` + `LoadLibraryW`, then calls
+  `ResumeThread`. This is the same early execution window used by SKSE: the DLL runs
+  before the game's entry point.
+- `probe_payload.dll` — does **not** load the STR client or install hooks. It only
+  installs a vectored exception handler that logs every dispatched exception,
+  including its code, address, and module, then returns
+  `EXCEPTION_CONTINUE_SEARCH` without changing behavior.
 
-O objetivo é isolar a variável **modo de carregamento** e nada mais. Nenhum
-código do STR roda dentro do jogo neste teste.
+The goal was to isolate the **loading mode** variable. No STR client code runs inside
+the game during this test.
 
-## Como interpretar o resultado
+## Interpreting the result
 
-| Observação | Leitura |
+| Observation | Interpretation |
 | --- | --- |
-| Jogo chega ao menu principal; log mostra `0x406D1388` despachada e seguida sem crash | **Hipótese confirmada.** O auto-mapeamento é a causa. O refactor para injeção externa se justifica. |
-| Jogo crasha do mesmo jeito (SIGFPE / exit 136), unwind seguindo RIPs inválidos | **Hipótese refutada.** O problema não é o modo de carregamento; o refactor inteiro fica economizado. |
-| Jogo crasha de forma diferente (ex.: DRM/CEG da Steam reclamando) | Resultado parcial: o unwind pode ter sido resolvido, mas há outro bloqueador. O log do handler diz qual. |
+| The game reaches the main menu; the log shows `0x406D1388` being dispatched and continued without a crash | **Hypothesis confirmed.** Self-mapping is the cause and the external-injection refactor is justified. |
+| The game crashes in the same way (SIGFPE / exit 136) while unwind follows invalid RIP values | **Hypothesis rejected.** Loading mode is not the cause, so the full refactor can be avoided. |
+| The game crashes differently, for example because Steam DRM/CEG rejects the process | Partial result: unwind may be fixed, but another blocker remains. The handler log identifies it. |
 
-Esse terceiro caso é a ressalva conhecida: o STR já lida com DRM CEG da Steam
-(`steam/SteamCeg.cpp`, `steam/SteamCrypto.h`), e não está estabelecido como o
-anti-tamper se comporta com o EXE rodando como processo real em vez de mapeado à
-mão. O probe é justamente o que responde isso barato.
+The third outcome was the known caveat. STR already handled Steam CEG DRM through
+`steam/SteamCeg.cpp` and `steam/SteamCrypto.h`, but the anti-tamper behavior with the
+EXE running as a real process instead of being manually mapped had not yet been
+established. The probe answered that question at low cost.
 
-## Como rodar (Proton, na máquina do usuário)
+## Running the probe under Proton
 
-Os binários são PE/Windows — precisam vir do CI (não há toolchain de build local
-para PE nesta máquina). Baixe o artifact e coloque os dois arquivos juntos numa
-pasta qualquer dentro do prefixo.
+The binaries are Windows PE files and must come from CI because this development
+machine does not have a local PE build toolchain. Download the artifact and place both
+files together in any directory accessible from the prefix.
 
 ```bash
 export PROTON="$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton11-1/proton"
@@ -88,21 +86,24 @@ export STEAM_COMPAT_APP_ID=489830
 export PROTON_LOG=1
 export WINEDEBUG=+seh,+unwind
 
-"$PROTON" run /caminho/para/probe_loader.exe "C:\\caminho\\para\\SkyrimSE.exe"
+"$PROTON" run /path/to/probe_loader.exe "C:\\path\\to\\SkyrimSE.exe"
 ```
 
-Saídas a coletar:
+Collect these outputs:
 
-- `probe_loader.log` e `probe_payload.log`, criados ao lado do `probe_loader.exe`.
-- `~/steam-489830.log` (do `PROTON_LOG=1`), que contém o rastro `+seh,+unwind`.
+- `probe_loader.log` and `probe_payload.log`, created next to `probe_loader.exe`;
+- `~/steam-489830.log`, created by `PROTON_LOG=1`, which contains the
+  `+seh,+unwind` trace.
 
-O `WINEDEBUG=+seh,+unwind` é o que torna o resultado legível: é nele que se vê se
-o `RtlVirtualUnwind2` ainda segue RIPs inválidos ao entrar na base do jogo.
+`WINEDEBUG=+seh,+unwind` makes the result readable. It shows whether
+`RtlVirtualUnwind2` still follows invalid RIP values after entering the game image.
 
-## Limites deliberados
+## Deliberate limitations
 
-Este probe **não** é um caminho de produção e não deve virar um. Ele não faz
-usvfs/PathRerouting, não reserva a zona do Script Extender, não instala os stubs
-de API, e não carrega o client. Um `ExternalProcessInjector` de verdade precisa de
-tudo isso — o que é o escopo da Fase 2 do roadmap (IPlatform), e só se justifica
-depois que este teste passar.
+This probe is **not** a production path and should not become one. It does not provide
+usvfs/PathRerouting, reserve the Script Extender memory range, install API stubs, or
+load the client. A production `ExternalProcessLauncher` needs all of those pieces.
+
+The hypothesis was ultimately confirmed, and the production implementation now lives
+in `Code/immersive_launcher/launch/ExternalProcessLauncher.*` and
+`Code/client_payload/`.

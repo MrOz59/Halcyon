@@ -57,9 +57,9 @@ void* TiltedOnlineApp::GetMainAddress() const
 
 bool TiltedOnlineApp::BeginMain()
 {
-    // BeginMain completa OK sob Proton; o crash 0x80000003 é ~5s depois, no loop
-    // de jogo (ver LinuxDiag / SkyrimVM64). Instrumentação mantida enquanto o
-    // diagnóstico continua.
+    // BeginMain completes under Proton; the 0x80000003 crash used to happen about
+    // five seconds later in the game loop (see LinuxDiag / SkyrimVM64). Keep the
+    // instrumentation while diagnostics are still useful.
     LinuxDiagStep("BeginMain enter");
 
     World::Create();
@@ -125,7 +125,7 @@ void TiltedOnlineApp::InstallHooks2()
     TiltedPhoques::Initializer::RunAll();
 
     TiltedPhoques::DInputHook::Install();
-    TiltedPhoques::DInputHook::Get().SetToggleKeys({DIK_F2, DIK_RCONTROL});
+    TiltedPhoques::DInputHook::Get().SetToggleKeys({DIK_F2, DIK_F3, DIK_RCONTROL});
 }
 
 void TiltedOnlineApp::UninstallHooks()
