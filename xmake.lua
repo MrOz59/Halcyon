@@ -39,6 +39,7 @@ add_requires(
     "cryptopp 8.9.0", 
     "spdlog v1.13.0", 
     "cpp-httplib 0.14.0",
+    "nlohmann_json 3.11.3",
     "gtest v1.14.0", 
     "mem 1.0.0", 
     "glm 0.9.9+8", 

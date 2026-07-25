@@ -21,11 +21,79 @@
 #include <DInputHook.hpp>
 
 #include <imgui.h>
+#include <nlohmann/json.hpp>
+#include <winhttp.h>
+
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
 
 namespace
 {
 constexpr size_t kMaxChatLines = 200;
+constexpr size_t kMaxServerListBytes = 4 * 1024 * 1024;
+constexpr wchar_t kServerListHost[] = L"skyrim-reborn-list.skyrim-together.com";
+constexpr wchar_t kServerListPath[] = L"/list";
+
+struct InternetHandle
+{
+    explicit InternetHandle(HINTERNET aHandle = nullptr) noexcept
+        : handle(aHandle)
+    {
+    }
+
+    ~InternetHandle() noexcept
+    {
+        if (handle)
+            WinHttpCloseHandle(handle);
+    }
+
+    InternetHandle(const InternetHandle&) = delete;
+    InternetHandle& operator=(const InternetHandle&) = delete;
+
+    operator HINTERNET() const noexcept { return handle; }
+    [[nodiscard]] bool IsValid() const noexcept { return handle != nullptr; }
+
+    HINTERNET handle;
+};
+
+std::string ToLower(std::string aText)
+{
+    std::transform(aText.begin(), aText.end(), aText.begin(), [](unsigned char aCharacter) { return static_cast<char>(std::tolower(aCharacter)); });
+    return aText;
 }
+
+std::string Trim(std::string aText)
+{
+    const auto first = std::find_if_not(aText.begin(), aText.end(), [](unsigned char aCharacter) { return std::isspace(aCharacter) != 0; });
+    const auto last = std::find_if_not(aText.rbegin(), aText.rend(), [](unsigned char aCharacter) { return std::isspace(aCharacter) != 0; }).base();
+
+    if (first >= last)
+        return {};
+
+    return std::string(first, last);
+}
+
+std::string NormalizeVersion(std::string aVersion)
+{
+    aVersion = ToLower(Trim(std::move(aVersion)));
+    const auto separator = aVersion.find('-');
+    if (separator != std::string::npos)
+        aVersion.resize(separator);
+    return aVersion;
+}
+
+std::filesystem::path GetNativeOverlaySettingsPath()
+{
+    return TiltedPhoques::GetPath() / "Data" / "SkyrimTogetherReborn" / "native_overlay.json";
+}
+
+std::string WinHttpError(const char* acAction)
+{
+    return std::string(acAction) + " failed (WinHTTP error " + std::to_string(GetLastError()) + ")";
+}
+} // namespace
 
 ImGuiOverlayService::ImGuiOverlayService(World& aWorld, TransportService& aTransport, entt::dispatcher& aDispatcher, ImguiService& aImguiService)
     : m_world(aWorld)
@@ -41,6 +109,7 @@ ImGuiOverlayService::ImGuiOverlayService(World& aWorld, TransportService& aTrans
     m_playerLevelConnection = aDispatcher.sink<NotifyPlayerLevel>().connect<&ImGuiOverlayService::OnPlayerLevel>(this);
 
     m_statusLine = "Not connected";
+    LoadFavorites();
 }
 
 ImGuiOverlayService::~ImGuiOverlayService() noexcept = default;
@@ -73,6 +142,9 @@ void ImGuiOverlayService::SetVisible(bool aVisible) noexcept
 
     m_visible = aVisible;
     spdlog::info("[overlay] native ImGui UI {}", m_visible ? "opened" : "closed");
+
+    if (m_visible && !m_serverListLoaded && !m_serverListLoading)
+        RefreshPublicServers();
 }
 
 void ImGuiOverlayService::AddSystemMessage(const std::string& acText) noexcept
@@ -87,22 +159,37 @@ void ImGuiOverlayService::OnConnected(const ConnectedEvent&) noexcept
 {
     m_connected = true;
     m_statusLine = "Connected";
+    m_errorLine.clear();
     AddSystemMessage("Connected to server.");
 }
 
 void ImGuiOverlayService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
+    const bool wasConnected = m_connected;
     m_connected = false;
     m_statusLine = "Disconnected";
     m_players.clear();
-    AddSystemMessage("Disconnected from server.");
+
+    if (wasConnected)
+        AddSystemMessage("Disconnected from server.");
 }
 
 void ImGuiOverlayService::OnConnectionError(const ConnectionErrorEvent& acEvent) noexcept
 {
+    bool isWarning = false;
+    const std::string message = DescribeConnectionError(acEvent.ErrorDetail.c_str(), isWarning);
+
+    if (isWarning)
+    {
+        m_warningLine = message;
+        AddSystemMessage("Warning: " + message);
+        return;
+    }
+
     m_connected = false;
-    m_statusLine = std::string("Connection error: ") + acEvent.ErrorDetail.c_str();
-    AddSystemMessage(m_statusLine);
+    m_statusLine = "Connection failed";
+    m_errorLine = message;
+    AddSystemMessage("Error: " + message);
 }
 
 void ImGuiOverlayService::OnChatMessage(const NotifyChatMessageBroadcast& acMessage) noexcept
@@ -134,114 +221,694 @@ void ImGuiOverlayService::OnPlayerLevel(const NotifyPlayerLevel& acMessage) noex
 
 void ImGuiOverlayService::OnDraw() noexcept
 {
+    PollPublicServers();
+
     if (!m_visible)
         return;
 
-    DrawConnectionWindow();
-    DrawPlayersWindow();
+    DrawMainWindow();
     DrawChatWindow();
 }
 
-void ImGuiOverlayService::DrawConnectionWindow() noexcept
+void ImGuiOverlayService::DrawMainWindow() noexcept
 {
-    ImGui::SetNextWindowSize(ImVec2(320, 0), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(40, 40), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Skyrim Together"))
+    const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    const ImVec2 initialSize(std::max(560.f, std::min(900.f, displaySize.x - 40.f)), std::max(420.f, std::min(650.f, displaySize.y - 40.f)));
+
+    ImGui::SetNextWindowSize(initialSize, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(displaySize.x * 0.5f, displaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+
+    if (!ImGui::Begin("Skyrim Together##native_overlay", nullptr, ImGuiWindowFlags_NoCollapse))
     {
-        ImGui::TextUnformatted(m_statusLine.c_str());
-        ImGui::Separator();
-
-        ImGui::BeginDisabled(m_connected);
-        ImGui::InputText("Address", m_addressBuffer, std::size(m_addressBuffer));
-        ImGui::InputInt("Port", &m_port);
-        ImGui::InputText("Password", m_passwordBuffer, std::size(m_passwordBuffer), ImGuiInputTextFlags_Password);
-        ImGui::EndDisabled();
-
-        if (!m_connected)
-        {
-            if (ImGui::Button("Connect"))
-            {
-                std::string address = m_addressBuffer;
-                if (address == "localhost")
-                    address = "127.0.0.1";
-
-                const uint16_t port = m_port > 0 ? static_cast<uint16_t>(m_port) : 10578;
-                const std::string endpoint = address + ":" + std::to_string(port);
-
-                m_transport.SetServerPassword(m_passwordBuffer);
-                m_statusLine = "Connecting to " + endpoint + "...";
-
-                World& world = m_world;
-                world.GetRunner().Queue([&world, endpoint] { world.GetTransport().Connect(endpoint); });
-            }
-        }
-        else
-        {
-            if (ImGui::Button("Disconnect"))
-            {
-                World& world = m_world;
-                world.GetRunner().Queue([&world] { world.GetTransport().Close(); });
-            }
-        }
+        ImGui::End();
+        return;
     }
+
+    const ImVec4 statusColor = m_connected ? ImVec4(0.35f, 0.85f, 0.45f, 1.f) : ImVec4(0.75f, 0.78f, 0.82f, 1.f);
+    ImGui::TextColored(statusColor, "%s", m_statusLine.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("  |  Build %s  |  F2 or Esc to close", BUILD_COMMIT);
+
+    if (!m_warningLine.empty())
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.78f, 0.28f, 1.f));
+        ImGui::TextWrapped("Warning: %s", m_warningLine.c_str());
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Dismiss##warning"))
+            m_warningLine.clear();
+    }
+
+    if (!m_errorLine.empty())
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.4f, 0.4f, 1.f));
+        ImGui::TextWrapped("Error: %s", m_errorLine.c_str());
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Dismiss##error"))
+            m_errorLine.clear();
+    }
+
+    ImGui::Separator();
+
+    if (ImGui::BeginTabBar("main_tabs"))
+    {
+        if (ImGui::BeginTabItem("Connect"))
+        {
+            DrawConnectionTab();
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Public servers"))
+        {
+            DrawServerBrowserTab();
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Players"))
+        {
+            DrawPlayersTab();
+            ImGui::EndTabItem();
+        }
+
+        ImGui::EndTabBar();
+    }
+
     ImGui::End();
 }
 
-void ImGuiOverlayService::DrawPlayersWindow() noexcept
+void ImGuiOverlayService::DrawConnectionTab() noexcept
 {
-    ImGui::SetNextWindowSize(ImVec2(220, 260), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(380, 40), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Players"))
+    ImGui::Spacing();
+    ImGui::TextWrapped("Connect directly to a private or self-hosted server. Use the Public servers tab to browse announced servers.");
+    ImGui::Spacing();
+
+    ImGui::BeginDisabled(m_connected);
+    ImGui::SetNextItemWidth(std::min(460.f, ImGui::GetContentRegionAvail().x));
+    ImGui::InputTextWithHint("##manual_address", "Address or hostname", m_addressBuffer, std::size(m_addressBuffer));
+
+    ImGui::SetNextItemWidth(150.f);
+    ImGui::InputInt("Port", &m_port);
+
+    ImGui::SetNextItemWidth(std::min(460.f, ImGui::GetContentRegionAvail().x));
+    ImGui::InputTextWithHint("##manual_password", "Password (optional)", m_passwordBuffer, std::size(m_passwordBuffer), ImGuiInputTextFlags_Password);
+    ImGui::EndDisabled();
+
+    ImGui::Spacing();
+    if (!m_connected)
     {
-        ImGui::Text("%d online", static_cast<int>(m_players.size()));
+        if (ImGui::Button("Connect", ImVec2(140.f, 0.f)))
+        {
+            const int port = std::clamp(m_port, 1, 65535);
+            m_port = port;
+            Connect(m_addressBuffer, static_cast<uint16_t>(port), m_passwordBuffer);
+        }
+    }
+    else if (ImGui::Button("Disconnect", ImVec2(140.f, 0.f)))
+    {
+        World& world = m_world;
+        world.GetRunner().Queue([&world] { world.GetTransport().Close(); });
+    }
+}
+
+void ImGuiOverlayService::DrawServerBrowserTab() noexcept
+{
+    ImGui::Spacing();
+
+    ImGui::BeginDisabled(m_serverListLoading);
+    if (ImGui::Button("Refresh"))
+        RefreshPublicServers();
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    if (m_serverListLoading)
+        ImGui::TextDisabled("Loading public servers...");
+    else
+        ImGui::TextDisabled("%zu servers received", m_publicServers.size());
+
+    ImGui::SetNextItemWidth(std::min(360.f, ImGui::GetContentRegionAvail().x));
+    ImGui::InputTextWithHint("##server_search", "Search by name or description", m_serverSearchBuffer, std::size(m_serverSearchBuffer));
+
+    bool filtersChanged = false;
+    filtersChanged |= ImGui::Checkbox("Hide full", &m_hideFullServers);
+    ImGui::SameLine();
+    filtersChanged |= ImGui::Checkbox("Hide password protected", &m_hidePasswordServers);
+    ImGui::SameLine();
+    filtersChanged |= ImGui::Checkbox("Hide version mismatch", &m_hideVersionMismatch);
+    if (filtersChanged)
+        SaveFavorites();
+
+    if (!m_serverListError.empty())
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.4f, 0.4f, 1.f));
+        ImGui::TextWrapped("%s", m_serverListError.c_str());
+        ImGui::PopStyleColor();
+    }
+
+    const std::string search = ToLower(m_serverSearchBuffer);
+    std::vector<const PublicServer*> visibleServers;
+    visibleServers.reserve(m_publicServers.size());
+
+    for (const auto& server : m_publicServers)
+    {
+        if (m_hideFullServers && server.maxPlayerCount > 0 && server.playerCount >= server.maxPlayerCount)
+            continue;
+        if (m_hidePasswordServers && server.passwordProtected)
+            continue;
+        if (m_hideVersionMismatch && !IsVersionCompatible(server))
+            continue;
+
+        if (!search.empty())
+        {
+            const std::string searchableText = ToLower(server.name + " " + server.description + " " + server.address);
+            if (searchableText.find(search) == std::string::npos)
+                continue;
+        }
+
+        visibleServers.push_back(&server);
+    }
+
+    std::stable_sort(
+        visibleServers.begin(), visibleServers.end(),
+        [this](const PublicServer* apLeft, const PublicServer* apRight)
+        {
+            const bool leftFavorite = m_favoriteServers.contains(MakeServerKey(*apLeft));
+            const bool rightFavorite = m_favoriteServers.contains(MakeServerKey(*apRight));
+            if (leftFavorite != rightFavorite)
+                return leftFavorite;
+            if (apLeft->playerCount != apRight->playerCount)
+                return apLeft->playerCount > apRight->playerCount;
+            return ToLower(apLeft->name) < ToLower(apRight->name);
+        });
+
+    ImGui::TextDisabled("%zu shown", visibleServers.size());
+
+    const ImGuiTableFlags tableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp;
+    const float tableHeight = std::max(180.f, ImGui::GetContentRegionAvail().y - 125.f);
+
+    if (ImGui::BeginTable("public_server_table", 5, tableFlags, ImVec2(0.f, tableHeight)))
+    {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("Fav", ImGuiTableColumnFlags_WidthFixed, 42.f);
+        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 0.52f);
+        ImGui::TableSetupColumn("Players", ImGuiTableColumnFlags_WidthFixed, 72.f);
+        ImGui::TableSetupColumn("Version", ImGuiTableColumnFlags_WidthFixed, 90.f);
+        ImGui::TableSetupColumn("Access", ImGuiTableColumnFlags_WidthFixed, 88.f);
+        ImGui::TableHeadersRow();
+
+        for (const PublicServer* pServer : visibleServers)
+        {
+            const std::string key = MakeServerKey(*pServer);
+            const bool favorite = m_favoriteServers.contains(key);
+            const bool selected = m_selectedServerKey == key;
+
+            ImGui::PushID(key.c_str());
+            ImGui::TableNextRow();
+
+            ImGui::TableSetColumnIndex(0);
+            if (ImGui::SmallButton(favorite ? "*" : "+"))
+                ToggleFavorite(*pServer);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(favorite ? "Remove favorite" : "Add favorite");
+
+            ImGui::TableSetColumnIndex(1);
+            if (ImGui::Selectable(pServer->name.c_str(), selected))
+            {
+                m_selectedServerKey = key;
+                m_serverPasswordBuffer[0] = '\0';
+
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !pServer->passwordProtected && !m_connected)
+                    Connect(pServer->address, pServer->port, {});
+            }
+
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%u/%u", pServer->playerCount, pServer->maxPlayerCount);
+
+            ImGui::TableSetColumnIndex(3);
+            if (!IsVersionCompatible(*pServer))
+                ImGui::TextColored(ImVec4(1.f, 0.55f, 0.3f, 1.f), "%s", pServer->version.c_str());
+            else
+                ImGui::TextUnformatted(pServer->version.c_str());
+
+            ImGui::TableSetColumnIndex(4);
+            ImGui::TextUnformatted(pServer->passwordProtected ? "Password" : "Open");
+            ImGui::PopID();
+        }
+
+        ImGui::EndTable();
+    }
+
+    const PublicServer* pSelectedServer = nullptr;
+    for (const auto& server : m_publicServers)
+    {
+        if (MakeServerKey(server) == m_selectedServerKey)
+        {
+            pSelectedServer = &server;
+            break;
+        }
+    }
+
+    if (pSelectedServer)
+    {
         ImGui::Separator();
+        ImGui::Text("%s", pSelectedServer->name.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", MakeEndpoint(pSelectedServer->address, pSelectedServer->port).c_str());
+
+        if (!pSelectedServer->description.empty())
+            ImGui::TextWrapped("%s", pSelectedServer->description.c_str());
+
+        if (pSelectedServer->passwordProtected)
+        {
+            ImGui::SetNextItemWidth(260.f);
+            ImGui::InputTextWithHint("##public_server_password", "Server password", m_serverPasswordBuffer, std::size(m_serverPasswordBuffer), ImGuiInputTextFlags_Password);
+            ImGui::SameLine();
+        }
+
+        ImGui::BeginDisabled(m_connected);
+        if (ImGui::Button("Connect to selected"))
+            Connect(pSelectedServer->address, pSelectedServer->port, m_serverPasswordBuffer);
+        ImGui::EndDisabled();
+    }
+}
+
+void ImGuiOverlayService::DrawPlayersTab() noexcept
+{
+    ImGui::Spacing();
+    ImGui::Text("%zu players online", m_players.size());
+    ImGui::Separator();
+
+    if (m_players.empty())
+    {
+        ImGui::TextDisabled(m_connected ? "No other players are currently visible." : "Connect to a server to see its players.");
+        return;
+    }
+
+    if (ImGui::BeginTable("players_table", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
+    {
+        ImGui::TableSetupColumn("Player");
+        ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed, 90.f);
+        ImGui::TableHeadersRow();
 
         for (const auto& [id, player] : m_players)
-            ImGui::Text("%s (lvl %u)", player.name.c_str(), player.level);
+        {
+            TP_UNUSED(id);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(player.name.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%u", player.level);
+        }
+
+        ImGui::EndTable();
     }
-    ImGui::End();
 }
 
 void ImGuiOverlayService::DrawChatWindow() noexcept
 {
-    ImGui::SetNextWindowSize(ImVec2(420, 300), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(40, 300), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Chat"))
+    const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    const ImVec2 initialSize(std::max(360.f, std::min(480.f, displaySize.x - 60.f)), std::max(220.f, std::min(320.f, displaySize.y - 80.f)));
+
+    ImGui::SetNextWindowSize(initialSize, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(30.f, std::max(30.f, displaySize.y - initialSize.y - 30.f)), ImGuiCond_FirstUseEver);
+
+    if (!ImGui::Begin("Chat##native_chat"))
     {
-        const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
-        if (ImGui::BeginChild("chat_scroll", ImVec2(0, -footer), true))
-        {
-            for (const auto& line : m_chat)
-            {
-                if (line.author.empty())
-                    ImGui::TextDisabled("%s", line.text.c_str());
-                else
-                    ImGui::Text("%s: %s", line.author.c_str(), line.text.c_str());
-            }
+        ImGui::End();
+        return;
+    }
 
-            if (m_scrollChatToBottom)
-            {
-                ImGui::SetScrollHereY(1.0f);
-                m_scrollChatToBottom = false;
-            }
+    const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
+    if (ImGui::BeginChild("chat_scroll", ImVec2(0, -footer), true))
+    {
+        if (m_chat.empty())
+            ImGui::TextDisabled("Chat messages and system notifications will appear here.");
+
+        for (const auto& line : m_chat)
+        {
+            if (line.author.empty())
+                ImGui::TextDisabled("%s", line.text.c_str());
+            else
+                ImGui::TextWrapped("%s: %s", line.author.c_str(), line.text.c_str());
         }
-        ImGui::EndChild();
 
-        ImGui::BeginDisabled(!m_connected);
-        const bool submitted = ImGui::InputText("##chat_input", m_chatInputBuffer, std::size(m_chatInputBuffer), ImGuiInputTextFlags_EnterReturnsTrue);
-        ImGui::SameLine();
-        const bool sendClicked = ImGui::Button("Send");
-        ImGui::EndDisabled();
-
-        if ((submitted || sendClicked) && m_chatInputBuffer[0] != '\0')
+        if (m_scrollChatToBottom)
         {
-            SendChatMessageRequest request;
-            request.MessageType = ChatMessageType::kGlobalChat;
-            request.ChatMessage = m_chatInputBuffer;
-            m_transport.Send(request);
-
-            m_chatInputBuffer[0] = '\0';
+            ImGui::SetScrollHereY(1.0f);
+            m_scrollChatToBottom = false;
         }
     }
+    ImGui::EndChild();
+
+    ImGui::BeginDisabled(!m_connected);
+    ImGui::SetNextItemWidth(-90.f);
+    const bool submitted = ImGui::InputTextWithHint(
+        "##chat_input", m_connected ? "Type a global message" : "Connect to a server to chat", m_chatInputBuffer, std::size(m_chatInputBuffer),
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    const bool sendClicked = ImGui::Button("Send");
+    ImGui::EndDisabled();
+
+    if ((submitted || sendClicked) && m_chatInputBuffer[0] != '\0')
+    {
+        SendChatMessageRequest request;
+        request.MessageType = ChatMessageType::kGlobalChat;
+        request.ChatMessage = m_chatInputBuffer;
+        m_transport.Send(request);
+        m_chatInputBuffer[0] = '\0';
+    }
+
     ImGui::End();
+}
+
+void ImGuiOverlayService::Connect(const std::string& acAddress, uint16_t aPort, const std::string& acPassword) noexcept
+{
+    std::string address = Trim(acAddress);
+    if (address == "localhost")
+        address = "127.0.0.1";
+
+    if (address.empty())
+    {
+        m_errorLine = "Enter a valid server address.";
+        return;
+    }
+
+    const std::string endpoint = MakeEndpoint(address, aPort);
+    m_transport.SetServerPassword(acPassword);
+    m_statusLine = "Connecting to " + endpoint + "...";
+    m_errorLine.clear();
+
+    World& world = m_world;
+    world.GetRunner().Queue([&world, endpoint] { world.GetTransport().Connect(endpoint); });
+}
+
+ImGuiOverlayService::ServerListResult ImGuiOverlayService::FetchPublicServers() noexcept
+{
+    ServerListResult result;
+
+    try
+    {
+        InternetHandle session(WinHttpOpen(L"SkyrimTogetherNativeUI/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+        if (!session.IsValid())
+        {
+            result.error = WinHttpError("Opening the HTTP session");
+            return result;
+        }
+
+        WinHttpSetTimeouts(session, 5000, 5000, 5000, 10000);
+
+        InternetHandle connection(WinHttpConnect(session, kServerListHost, INTERNET_DEFAULT_HTTPS_PORT, 0));
+        if (!connection.IsValid())
+        {
+            result.error = WinHttpError("Connecting to the public server service");
+            return result;
+        }
+
+        const wchar_t* acceptTypes[] = {L"application/json", nullptr};
+        InternetHandle request(WinHttpOpenRequest(connection, L"GET", kServerListPath, nullptr, WINHTTP_NO_REFERER, acceptTypes, WINHTTP_FLAG_SECURE));
+        if (!request.IsValid())
+        {
+            result.error = WinHttpError("Creating the public server request");
+            return result;
+        }
+
+        if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) || !WinHttpReceiveResponse(request, nullptr))
+        {
+            result.error = WinHttpError("Downloading the public server list");
+            return result;
+        }
+
+        DWORD statusCode = 0;
+        DWORD statusCodeSize = sizeof(statusCode);
+        if (!WinHttpQueryHeaders(
+                request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX) ||
+            statusCode != 200)
+        {
+            result.error = "The public server service returned HTTP " + std::to_string(statusCode) + ".";
+            return result;
+        }
+
+        std::string responseBody;
+        while (true)
+        {
+            DWORD available = 0;
+            if (!WinHttpQueryDataAvailable(request, &available))
+            {
+                result.error = WinHttpError("Reading the public server list");
+                return result;
+            }
+
+            if (available == 0)
+                break;
+
+            if (responseBody.size() + available > kMaxServerListBytes)
+            {
+                result.error = "The public server response was unexpectedly large.";
+                return result;
+            }
+
+            const size_t previousSize = responseBody.size();
+            responseBody.resize(previousSize + available);
+
+            DWORD bytesRead = 0;
+            if (!WinHttpReadData(request, responseBody.data() + previousSize, available, &bytesRead))
+            {
+                result.error = WinHttpError("Reading the public server response");
+                return result;
+            }
+
+            responseBody.resize(previousSize + bytesRead);
+            if (bytesRead == 0)
+                break;
+        }
+
+        const nlohmann::json document = nlohmann::json::parse(responseBody);
+        if (!document.contains("servers") || !document["servers"].is_array())
+        {
+            result.error = "The public server service returned an invalid response.";
+            return result;
+        }
+
+        for (const auto& entry : document["servers"])
+        {
+            if (!entry.is_object())
+                continue;
+
+            PublicServer server;
+            server.name = entry.value("name", "Unnamed server");
+            server.description = entry.value("desc", "");
+            server.address = entry.value("ip", "");
+            server.version = entry.value("version", "unknown");
+
+            const int port = entry.value("port", 10578);
+            const int playerCount = entry.value("player_count", 0);
+            const int maxPlayerCount = entry.value("max_player_count", 0);
+            server.port = static_cast<uint16_t>(std::clamp(port, 1, 65535));
+            server.playerCount = static_cast<uint16_t>(std::clamp(playerCount, 0, 65535));
+            server.maxPlayerCount = static_cast<uint16_t>(std::clamp(maxPlayerCount, 0, 65535));
+            server.passwordProtected = entry.value("pass", false);
+
+            if (server.name.size() > 100)
+                server.name.resize(100);
+
+            if (!server.address.empty())
+                result.servers.emplace_back(std::move(server));
+        }
+    }
+    catch (const std::exception& exception)
+    {
+        result.error = std::string("Could not parse the public server list: ") + exception.what();
+    }
+    catch (...)
+    {
+        result.error = "Could not load the public server list.";
+    }
+
+    return result;
+}
+
+void ImGuiOverlayService::RefreshPublicServers() noexcept
+{
+    if (m_serverListLoading)
+        return;
+
+    m_serverListLoading = true;
+    m_serverListError.clear();
+
+    try
+    {
+        m_serverListFuture = std::async(std::launch::async, &ImGuiOverlayService::FetchPublicServers);
+    }
+    catch (const std::exception& exception)
+    {
+        m_serverListLoading = false;
+        m_serverListError = std::string("Could not start the server list request: ") + exception.what();
+        spdlog::warn("[overlay] {}", m_serverListError);
+    }
+}
+
+void ImGuiOverlayService::PollPublicServers() noexcept
+{
+    if (!m_serverListLoading || !m_serverListFuture.valid())
+        return;
+
+    if (m_serverListFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return;
+
+    ServerListResult result;
+    try
+    {
+        result = m_serverListFuture.get();
+    }
+    catch (const std::exception& exception)
+    {
+        result.error = std::string("The server list request failed: ") + exception.what();
+    }
+
+    m_serverListLoading = false;
+    m_serverListLoaded = result.error.empty();
+    m_serverListError = std::move(result.error);
+
+    if (m_serverListLoaded)
+    {
+        m_publicServers = std::move(result.servers);
+        spdlog::info("[overlay] loaded {} public servers", m_publicServers.size());
+    }
+    else
+    {
+        spdlog::warn("[overlay] public server list failed: {}", m_serverListError);
+    }
+}
+
+void ImGuiOverlayService::ToggleFavorite(const PublicServer& acServer) noexcept
+{
+    const std::string key = MakeServerKey(acServer);
+    if (m_favoriteServers.contains(key))
+        m_favoriteServers.erase(key);
+    else
+        m_favoriteServers.emplace(key);
+
+    SaveFavorites();
+}
+
+void ImGuiOverlayService::LoadFavorites() noexcept
+{
+    try
+    {
+        std::ifstream file(GetNativeOverlaySettingsPath());
+        if (!file)
+            return;
+
+        const nlohmann::json settings = nlohmann::json::parse(file);
+        if (settings.contains("favorites") && settings["favorites"].is_array())
+        {
+            for (const auto& favorite : settings["favorites"])
+            {
+                if (favorite.is_string())
+                    m_favoriteServers.emplace(favorite.get<std::string>());
+            }
+        }
+
+        m_hideFullServers = settings.value("hide_full_servers", true);
+        m_hidePasswordServers = settings.value("hide_password_servers", false);
+        m_hideVersionMismatch = settings.value("hide_version_mismatch", false);
+    }
+    catch (const std::exception& exception)
+    {
+        spdlog::warn("[overlay] could not load native UI settings: {}", exception.what());
+    }
+}
+
+void ImGuiOverlayService::SaveFavorites() const noexcept
+{
+    try
+    {
+        const std::filesystem::path settingsPath = GetNativeOverlaySettingsPath();
+        std::error_code error;
+        std::filesystem::create_directories(settingsPath.parent_path(), error);
+
+        nlohmann::json settings;
+        settings["favorites"] = m_favoriteServers;
+        settings["hide_full_servers"] = m_hideFullServers;
+        settings["hide_password_servers"] = m_hidePasswordServers;
+        settings["hide_version_mismatch"] = m_hideVersionMismatch;
+
+        std::ofstream file(settingsPath, std::ios::trunc);
+        if (file)
+            file << settings.dump(2);
+    }
+    catch (const std::exception& exception)
+    {
+        spdlog::warn("[overlay] could not save native UI settings: {}", exception.what());
+    }
+}
+
+std::string ImGuiOverlayService::MakeServerKey(const PublicServer& acServer)
+{
+    return MakeEndpoint(acServer.address, acServer.port);
+}
+
+std::string ImGuiOverlayService::MakeEndpoint(const std::string& acAddress, uint16_t aPort)
+{
+    if (acAddress.find(':') != std::string::npos && !(acAddress.starts_with('[') && acAddress.ends_with(']')))
+        return "[" + acAddress + "]:" + std::to_string(aPort);
+
+    return acAddress + ":" + std::to_string(aPort);
+}
+
+bool ImGuiOverlayService::IsVersionCompatible(const PublicServer& acServer) noexcept
+{
+    const std::string clientVersion = NormalizeVersion(BUILD_COMMIT);
+    const std::string serverVersion = NormalizeVersion(acServer.version);
+
+    // Fork builds without an upstream tag use a SHA-like version. In that case
+    // the UI cannot infer protocol compatibility, so it does not hide servers.
+    if (clientVersion.find('.') == std::string::npos)
+        return true;
+
+    return clientVersion == serverVersion;
+}
+
+std::string ImGuiOverlayService::DescribeConnectionError(const std::string& acDetail, bool& aIsWarning) noexcept
+{
+    aIsWarning = false;
+
+    const nlohmann::json detail = nlohmann::json::parse(acDetail, nullptr, false);
+    if (detail.is_discarded() || !detail.is_object())
+        return acDetail.empty() ? "The connection failed for an unknown reason." : acDetail;
+
+    const std::string error = detail.value("error", "no_reason");
+
+    if (error == "non_default_install")
+    {
+        aIsWarning = true;
+        return "A non-vanilla installation was detected. Extra mods or Creation Club content can cause synchronization problems.";
+    }
+    if (error == "bad_uGridsToLoad")
+    {
+        aIsWarning = true;
+        return "uGridsToLoad must be set to 5 for multiplayer.";
+    }
+    if (error == "set_time_public_server")
+    {
+        aIsWarning = true;
+        return "Changing the server time is disabled on public servers.";
+    }
+    if (error == "wrong_password")
+        return "The server password is incorrect.";
+    if (error == "server_full")
+        return "The server is full.";
+    if (error == "wrong_version")
+    {
+        const auto data = detail.value("data", nlohmann::json::object());
+        return "Version mismatch. Client: " + data.value("version", std::string("unknown")) + ", server expects: " + data.value("expectedVersion", std::string("unknown")) + ".";
+    }
+    if (error == "mods_mismatch")
+        return "Your enabled mod list does not match the server.";
+    if (error == "client_mods_disallowed")
+        return "The server does not allow the active client-side mod configuration.";
+    if (error == "no_reason")
+        return "The server rejected the connection without providing a reason.";
+
+    return "Connection failed: " + error + ".";
 }

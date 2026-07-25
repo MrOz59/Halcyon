@@ -9,8 +9,11 @@
 
 #include <cstdint>
 #include <deque>
+#include <future>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include <TiltedCore/Stl.hpp>
 
@@ -44,8 +47,10 @@ public:
 private:
     void OnDraw() noexcept;
 
-    void DrawConnectionWindow() noexcept;
-    void DrawPlayersWindow() noexcept;
+    void DrawMainWindow() noexcept;
+    void DrawConnectionTab() noexcept;
+    void DrawServerBrowserTab() noexcept;
+    void DrawPlayersTab() noexcept;
     void DrawChatWindow() noexcept;
 
     void OnConnected(const ConnectedEvent& acEvent) noexcept;
@@ -57,6 +62,37 @@ private:
     void OnPlayerLevel(const NotifyPlayerLevel& acMessage) noexcept;
 
     void AddSystemMessage(const std::string& acText) noexcept;
+    void Connect(const std::string& acAddress, uint16_t aPort, const std::string& acPassword) noexcept;
+
+    struct PublicServer
+    {
+        std::string name;
+        std::string description;
+        std::string address;
+        std::string version;
+        uint16_t port = 10578;
+        uint16_t playerCount = 0;
+        uint16_t maxPlayerCount = 0;
+        bool passwordProtected = false;
+    };
+
+    struct ServerListResult
+    {
+        std::vector<PublicServer> servers;
+        std::string error;
+    };
+
+    static ServerListResult FetchPublicServers() noexcept;
+    void RefreshPublicServers() noexcept;
+    void PollPublicServers() noexcept;
+    void ToggleFavorite(const PublicServer& acServer) noexcept;
+    void LoadFavorites() noexcept;
+    void SaveFavorites() const noexcept;
+
+    [[nodiscard]] static std::string MakeServerKey(const PublicServer& acServer);
+    [[nodiscard]] static std::string MakeEndpoint(const std::string& acAddress, uint16_t aPort);
+    [[nodiscard]] static bool IsVersionCompatible(const PublicServer& acServer) noexcept;
+    [[nodiscard]] static std::string DescribeConnectionError(const std::string& acDetail, bool& aIsWarning) noexcept;
 
     struct RemotePlayer
     {
@@ -76,15 +112,29 @@ private:
     bool m_visible = false;
     bool m_connected = false;
     bool m_scrollChatToBottom = false;
+    bool m_serverListLoading = false;
+    bool m_serverListLoaded = false;
+    bool m_hideFullServers = true;
+    bool m_hidePasswordServers = false;
+    bool m_hideVersionMismatch = false;
 
     char m_addressBuffer[128]{"127.0.0.1"};
     int m_port = 10578;
     char m_passwordBuffer[128]{};
     char m_chatInputBuffer[512]{};
+    char m_serverSearchBuffer[128]{};
+    char m_serverPasswordBuffer[128]{};
     std::string m_statusLine;
+    std::string m_warningLine;
+    std::string m_errorLine;
+    std::string m_selectedServerKey;
+    std::string m_serverListError;
 
     std::unordered_map<uint32_t, RemotePlayer> m_players;
     std::deque<ChatLine> m_chat;
+    std::vector<PublicServer> m_publicServers;
+    std::unordered_set<std::string> m_favoriteServers;
+    std::future<ServerListResult> m_serverListFuture;
 
     entt::scoped_connection m_drawConnection;
     entt::scoped_connection m_connectedConnection;

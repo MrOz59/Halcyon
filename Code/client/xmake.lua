@@ -49,6 +49,7 @@ target(name)
         "gamenetworkingsockets",
         "discord",
         "imgui",
+        "nlohmann_json",
         "cef",
         "minhook",
         "entt",
@@ -69,7 +70,8 @@ target(name)
     add_syslinks(
         "version",
         "dbghelp",
-        "kernel32")
+        "kernel32",
+        "winhttp")
 end
 
 add_requires("tiltedcore")
