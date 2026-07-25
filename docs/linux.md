@@ -96,8 +96,8 @@ services:
 - public browser through `skyrim-reborn-list.skyrim-together.com/list`;
 - search, filters, favorites, and visual version validation;
 - player names, levels, locations, health, and party state;
-- global, party, and local chat in a separate window, with timestamps and input
-  history;
+- global, party, and local chat in a separate window, with timestamps, wrapped
+  messages, input history, and an `Enter` shortcut that focuses chat directly;
 - player dialogue plus `/help`, `/global`, `/local`, `/party`, and `/settime`;
 - the `Reveal Players` action;
 - party creation, incoming and outgoing invitations, membership management,
@@ -147,6 +147,7 @@ The launcher accepts:
 In-game UI shortcuts:
 
 - `F2` — toggle the native multiplayer overlay;
+- `Enter` — open and focus chat while connected;
 - `F3` — toggle the internal ImGui debugger;
 - `Esc` — close the active debug layer or overlay.
 

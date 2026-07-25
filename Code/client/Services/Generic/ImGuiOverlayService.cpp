@@ -303,6 +303,16 @@ ImGuiOverlayService::~ImGuiOverlayService() noexcept = default;
 
 void ImGuiOverlayService::Toggle() noexcept
 {
+    if (m_visible && m_chatOnlyMode)
+    {
+        m_chatOnlyMode = false;
+        spdlog::info("[overlay] expanded chat shortcut into the full native UI");
+        if (!m_serverListLoaded && !m_serverListLoading)
+            RefreshPublicServers();
+        return;
+    }
+
+    m_chatOnlyMode = false;
     SetVisible(!m_visible);
 }
 
@@ -319,6 +329,8 @@ void ImGuiOverlayService::SetVisible(bool aVisible) noexcept
     {
         FlashPartyHud();
         SaveSettings();
+        m_chatOnlyMode = false;
+        m_focusChatInput = false;
     }
 
     // Input remains captured while either the regular overlay or the F3 debug UI
@@ -326,8 +338,25 @@ void ImGuiOverlayService::SetVisible(bool aVisible) noexcept
     // Wine/Proton.
     InputService::RefreshInputState();
 
-    if (m_visible && !m_serverListLoaded && !m_serverListLoading)
+    if (m_visible && !m_chatOnlyMode && !m_serverListLoaded && !m_serverListLoading)
         RefreshPublicServers();
+}
+
+bool ImGuiOverlayService::OpenChat() noexcept
+{
+    if (!m_connected)
+        return false;
+
+    if (!m_visible)
+    {
+        m_chatOnlyMode = true;
+        SetVisible(true);
+        spdlog::info("[overlay] chat opened with Enter");
+    }
+
+    m_focusChatInput = true;
+    m_scrollChatToBottom = true;
+    return true;
 }
 
 void ImGuiOverlayService::AddSystemMessage(const std::string& acText) noexcept
@@ -528,6 +557,9 @@ void ImGuiOverlayService::OnDraw() noexcept
 {
     PollPublicServers();
 
+    if (m_chatOnlyMode && !m_connected)
+        SetVisible(false);
+
     const auto now = std::chrono::steady_clock::now();
     while (!m_notifications.empty() && m_notifications.front().expiresAt <= now)
         m_notifications.pop_front();
@@ -551,7 +583,8 @@ void ImGuiOverlayService::OnDraw() noexcept
         return;
     }
 
-    DrawMainWindow();
+    if (!m_chatOnlyMode)
+        DrawMainWindow();
     DrawChatWindow();
 }
 
@@ -1424,7 +1457,7 @@ void ImGuiOverlayService::DrawChatWindow() noexcept
     ImGui::SetNextWindowSize(initialSize, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(30.f, std::max(30.f, displaySize.y - initialSize.y - 30.f)), ImGuiCond_FirstUseEver);
 
-    if (!ImGui::Begin("CHAT##native_chat"))
+    if (!ImGui::Begin("CHAT##native_chat", nullptr, ImGuiWindowFlags_NoCollapse))
     {
         ImGui::End();
         return;
@@ -1444,22 +1477,36 @@ void ImGuiOverlayService::DrawChatWindow() noexcept
         {
             const std::string timestamp = FormatChatTime(line.timestamp);
             ImGui::TextDisabled("[%s]", timestamp.c_str());
-            ImGui::SameLine();
 
-            if (line.type == kSystemMessage || line.author.empty())
-                ImGui::TextColored(SkyrimAccent(0.72f), "%s", line.text.c_str());
+            const bool systemMessage = line.type == kSystemMessage || line.author.empty();
+            if (systemMessage)
+            {
+                ImGui::SameLine();
+                ImGui::TextColored(SkyrimAccent(0.72f), "SYSTEM");
+            }
             else
             {
+                ImGui::SameLine();
                 if (line.type != kGlobalChat && line.type != kPlayerDialogue)
                 {
-                    ImGui::TextColored(GetChatColor(line.type), "[%s] ", GetChatChannelName(line.type));
-                    ImGui::SameLine(0.f, 0.f);
+                    ImGui::TextColored(GetChatColor(line.type), "[%s]", GetChatChannelName(line.type));
+                    ImGui::SameLine();
                 }
 
                 ImGui::TextColored(GetChatColor(line.type), "%s", line.author.c_str());
-                ImGui::SameLine(0.f, 0.f);
-                ImGui::TextWrapped(": %s", line.text.c_str());
             }
+
+            // Render message content on its own wrapped line. Keeping it separate
+            // from the timestamp/channel/author prefix gives long messages the
+            // full child width and also wraps system messages consistently.
+            ImGui::Indent(12.f);
+            ImGui::PushStyleColor(ImGuiCol_Text, systemMessage ? SkyrimAccent(0.82f) : GetChatColor(line.type));
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextUnformatted(line.text.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::PopStyleColor();
+            ImGui::Unindent(12.f);
+            ImGui::Spacing();
         }
 
         if (m_scrollChatToBottom)
@@ -1493,6 +1540,11 @@ void ImGuiOverlayService::DrawChatWindow() noexcept
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-90.f);
+    if (m_focusChatInput)
+    {
+        ImGui::SetKeyboardFocusHere();
+        m_focusChatInput = false;
+    }
     const bool submitted = ImGui::InputTextWithHint(
         "##chat_input", m_connected ? "Message or /help" : "Connect to a server to chat", m_chatInputBuffer, std::size(m_chatInputBuffer),
         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory, &ImGuiOverlayService::ChatHistoryCallback, this);
@@ -1500,8 +1552,11 @@ void ImGuiOverlayService::DrawChatWindow() noexcept
     const bool sendClicked = ImGui::Button("SEND");
     ImGui::EndDisabled();
 
+    const bool sentFromChatOnlyMode = m_chatOnlyMode && (submitted || sendClicked);
     if ((submitted || sendClicked) && m_chatInputBuffer[0] != '\0')
         SubmitChatInput();
+    if (sentFromChatOnlyMode)
+        SetVisible(false);
 
     ImGui::End();
 }

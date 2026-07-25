@@ -79,9 +79,11 @@ change, it preserves the original file as
 again** to reuse the chosen mode automatically. Run the launcher with `--configure`
 to show it again.
 
-After loading a save, press `F2` to open the interface. `Esc` or `F2` returns mouse
-and keyboard control to the game. The internal ImGui debugger is available with
-`F3`; press `F3` again or `Esc` to close it.
+After loading a save, press `F2` to open the interface. While connected, `Enter`
+opens the chat directly with its input field focused; sending the message returns
+control to the game. `Esc` or `F2` also returns mouse and keyboard control to the
+game. The internal ImGui debugger is available with `F3`; press `F3` again or `Esc`
+to close it.
 
 ## Native interface
 

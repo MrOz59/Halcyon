@@ -24,10 +24,17 @@ struct ImguiService
 
     LRESULT WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void RawInputHandler(RAWINPUT& aRawinput);
+    void SetCursorControlEnabled(bool aEnabled) noexcept;
 
     entt::sink<entt::sigh<TCallback>> OnDraw;
 
 private:
+    void ClampVirtualCursor() noexcept;
+    void RestoreVirtualCursor() const noexcept;
+
     ImGuiImpl::ImGuiDriver m_imDriver;
     entt::sigh<TCallback> m_drawSignal;
+    HWND m_window = nullptr;
+    POINT m_virtualCursor{};
+    bool m_cursorControlEnabled = false;
 };

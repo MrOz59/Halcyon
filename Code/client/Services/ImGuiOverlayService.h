@@ -52,6 +52,7 @@ public:
     // Toggles the interactive overlay (driven by InputService, e.g. F2).
     void Toggle() noexcept;
     void SetVisible(bool aVisible) noexcept;
+    [[nodiscard]] bool OpenChat() noexcept;
     [[nodiscard]] bool IsVisible() const noexcept { return m_visible; }
 
     // Makes local client/service notifications visible without going through CEF.
@@ -156,6 +157,8 @@ private:
     TransportService& m_transport;
 
     bool m_visible = false;
+    bool m_chatOnlyMode = false;
+    bool m_focusChatInput = false;
     bool m_connected = false;
     bool m_connecting = false;
     bool m_scrollChatToBottom = false;

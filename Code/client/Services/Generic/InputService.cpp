@@ -19,6 +19,7 @@
 
 static OverlayService* s_pOverlay = nullptr;
 static UINT s_currentACP = CP_ACP;
+static bool s_suppressChatOpenCharacter = false;
 
 void ForceKillAllInput()
 {
@@ -104,6 +105,28 @@ bool IsDisableKey(int aKey) noexcept
     return aKey == VK_ESCAPE;
 }
 
+void SetSystemCursorVisible(bool aVisible) noexcept
+{
+    CURSORINFO cursorInfo{sizeof(cursorInfo)};
+    if (GetCursorInfo(&cursorInfo))
+    {
+        const bool isVisible = (cursorInfo.flags & CURSOR_SHOWING) != 0;
+        if (isVisible == aVisible)
+            return;
+    }
+
+    if (aVisible)
+    {
+        while (ShowCursor(TRUE) < 0)
+            ;
+    }
+    else
+    {
+        while (ShowCursor(FALSE) >= 0)
+            ;
+    }
+}
+
 void InputService::RefreshInputState() noexcept
 {
     if (!s_pOverlay)
@@ -126,16 +149,8 @@ void InputService::RefreshInputState() noexcept
     // The Proton path and the standalone F3 debugger use the system cursor.
     // Native CEF draws its own cursor while active, so keep the system one hidden.
     const bool showSystemCursor = inputActive && (pNativeOverlay || !s_pOverlay->GetActive());
-    if (showSystemCursor)
-    {
-        while (ShowCursor(TRUE) < 0)
-            ;
-    }
-    else
-    {
-        while (ShowCursor(FALSE) >= 0)
-            ;
-    }
+    world.ctx().at<ImguiService>().SetCursorControlEnabled(showSystemCursor);
+    SetSystemCursorVisible(showSystemCursor);
 }
 
 void SetUIActive(OverlayService& aOverlay, auto apRenderer, bool aActive)
@@ -391,6 +406,33 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     if (auto* pImGuiOverlay = World::Get().GetImGuiOverlayService())
     {
         const bool imguiInputActive = pImGuiOverlay->IsVisible() || World::Get().GetDebugService().IsVisible();
+
+        if (s_suppressChatOpenCharacter)
+        {
+            if (uMsg == WM_CHAR && wParam == VK_RETURN)
+            {
+                s_suppressChatOpenCharacter = false;
+                return 0;
+            }
+
+            if (uMsg == WM_KEYUP && wParam == VK_RETURN)
+                s_suppressChatOpenCharacter = false;
+        }
+
+        // Enter opens the connected chat directly. Handle the window message
+        // before Skyrim consumes the key, then let OpenChat acquire input and
+        // focus the text field on the next ImGui frame. Preserve Alt+Enter for
+        // display-mode switching.
+        const bool openChatShortcut = !imguiInputActive && uMsg == WM_KEYDOWN && wParam == VK_RETURN && !(GetKeyState(VK_MENU) & 0x8000) && s_pOverlay->GetInGame();
+        if (openChatShortcut && pImGuiOverlay->OpenChat())
+        {
+            // WM_CHAR for the opening Enter may arrive before the next ImGui
+            // frame focuses the field. Do not let that character immediately
+            // submit and close the freshly opened chat.
+            s_suppressChatOpenCharacter = true;
+            return 0;
+        }
+
         auto& imgui = World::Get().ctx().at<ImguiService>();
 
         if (imguiInputActive)
