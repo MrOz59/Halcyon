@@ -54,6 +54,7 @@ public:
     void SetVisible(bool aVisible) noexcept;
     [[nodiscard]] bool OpenChat() noexcept;
     [[nodiscard]] bool IsVisible() const noexcept { return m_visible; }
+    [[nodiscard]] uint32_t GetChatShortcutKey() const noexcept { return m_chatShortcutKey; }
 
     // Makes local client/service notifications visible without going through CEF.
     void PushSystemMessage(const std::string& acText) noexcept;
@@ -159,6 +160,7 @@ private:
     bool m_visible = false;
     bool m_chatOnlyMode = false;
     bool m_focusChatInput = false;
+    bool m_capturingChatShortcut = false;
     bool m_connected = false;
     bool m_connecting = false;
     bool m_scrollChatToBottom = false;
@@ -176,6 +178,7 @@ private:
     int m_partyHudAutoHideSeconds = 1;
     int m_partyHudAnchor = 0;
     int m_chatChannel = 1;
+    uint32_t m_chatShortcutKey = 'Y';
 
     char m_addressBuffer[128]{"127.0.0.1"};
     int m_port = 10578;
@@ -188,6 +191,7 @@ private:
     std::string m_errorLine;
     std::string m_selectedServerKey;
     std::string m_serverListError;
+    std::string m_chatShortcutError;
 
     std::unordered_map<uint32_t, RemotePlayer> m_players;
     std::deque<ChatLine> m_chat;

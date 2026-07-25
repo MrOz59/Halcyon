@@ -19,7 +19,7 @@
 
 static OverlayService* s_pOverlay = nullptr;
 static UINT s_currentACP = CP_ACP;
-static bool s_suppressChatOpenCharacter = false;
+static bool s_suppressChatOpenKey = false;
 
 void ForceKillAllInput()
 {
@@ -454,30 +454,40 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     if (auto* pImGuiOverlay = World::Get().GetImGuiOverlayService())
     {
         const bool imguiInputActive = pImGuiOverlay->IsVisible() || World::Get().GetDebugService().IsVisible();
+        const WPARAM chatShortcutKey = static_cast<WPARAM>(pImGuiOverlay->GetChatShortcutKey());
 
-        if (s_suppressChatOpenCharacter)
+        if (s_suppressChatOpenKey)
         {
-            if (uMsg == WM_CHAR && wParam == VK_RETURN)
+            // Wine may emit more than one WM_KEYDOWN/WM_CHAR for the key that
+            // opened chat. Keep consuming that physical key press until key-up;
+            // clearing after only the first character lets a duplicate leak into
+            // the newly focused field.
+            const bool shortcutDownOrCharacter = (uMsg == WM_KEYDOWN && wParam == chatShortcutKey) || uMsg == WM_CHAR;
+            if (shortcutDownOrCharacter)
+                return 1;
+
+            if (uMsg == WM_KEYUP && wParam == chatShortcutKey)
             {
-                s_suppressChatOpenCharacter = false;
+                s_suppressChatOpenKey = false;
                 return 1;
             }
 
-            if (uMsg == WM_KEYUP && wParam == VK_RETURN)
-                s_suppressChatOpenCharacter = false;
+            // If focus changed before Wine delivered key-up, do not carry the
+            // suppression into the next interaction.
+            if (uMsg == WM_KILLFOCUS)
+                s_suppressChatOpenKey = false;
         }
 
-        // Enter opens the connected chat directly. Handle the window message
-        // before Skyrim consumes the key, then let OpenChat acquire input and
-        // focus the text field on the next ImGui frame. Preserve Alt+Enter for
-        // display-mode switching.
-        const bool openChatShortcut = !imguiInputActive && uMsg == WM_KEYDOWN && wParam == VK_RETURN && !(GetKeyState(VK_MENU) & 0x8000) && s_pOverlay->GetInGame();
+        // The configurable shortcut opens connected chat directly. Enter is
+        // reserved because Skyrim uses it to confirm menu choices. Handle the
+        // message before Skyrim consumes the key, then focus chat next frame.
+        const bool openChatShortcut = !imguiInputActive && uMsg == WM_KEYDOWN && wParam == chatShortcutKey && !(GetKeyState(VK_MENU) & 0x8000) &&
+                                      !(GetKeyState(VK_CONTROL) & 0x8000) && s_pOverlay->GetInGame();
         if (openChatShortcut && pImGuiOverlay->OpenChat())
         {
-            // WM_CHAR for the opening Enter may arrive before the next ImGui
-            // frame focuses the field. Do not let that character immediately
-            // submit and close the freshly opened chat.
-            s_suppressChatOpenCharacter = true;
+            // A corresponding WM_CHAR may arrive before the next ImGui frame
+            // focuses the field. Do not let it become the first character.
+            s_suppressChatOpenKey = true;
             return 1;
         }
 

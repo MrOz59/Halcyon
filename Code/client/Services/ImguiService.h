@@ -30,6 +30,7 @@ struct ImguiService
     entt::sink<entt::sigh<TCallback>> OnDraw;
 
 private:
+    void ClearInputState() noexcept;
     void ClampVirtualCursor() noexcept;
     void UpdateCursorClip() const noexcept;
 

@@ -151,6 +151,10 @@ void ImguiService::SetCursorControlEnabled(bool aEnabled) noexcept
     if (m_cursorControlEnabled == aEnabled)
         return;
 
+    // Raw-input button-up/key-up messages can be lost while Wine changes focus
+    // or ownership. Never let a stale held state survive between UI sessions.
+    ClearInputState();
+
     if (aEnabled)
         m_hasPreviousClipRect = GetClipCursor(&m_previousClipRect) != FALSE;
 
@@ -188,7 +192,28 @@ void ImguiService::SetCursorControlEnabled(bool aEnabled) noexcept
 void ImguiService::OnWindowFocusChanged(bool aFocused) noexcept
 {
     m_windowFocused = aFocused;
+    if (!m_windowFocused)
+        ClearInputState();
     UpdateCursorClip();
+}
+
+void ImguiService::ClearInputState() noexcept
+{
+    if (ImGui::GetCurrentContext() == NULL)
+        return;
+
+    ImGuiIO& io = ImGui::GetIO();
+    std::fill(std::begin(io.MouseDown), std::end(io.MouseDown), false);
+    std::fill(std::begin(io.KeysDown), std::end(io.KeysDown), false);
+    io.KeyCtrl = false;
+    io.KeyShift = false;
+    io.KeyAlt = false;
+    io.KeySuper = false;
+    io.MouseWheel = 0.f;
+    io.MouseWheelH = 0.f;
+
+    if (m_window && GetCapture() == m_window)
+        ReleaseCapture();
 }
 
 void ImguiService::ClampVirtualCursor() noexcept

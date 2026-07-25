@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cfloat>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -56,6 +57,7 @@ constexpr size_t kMaxChatMessageLength = 512;
 constexpr size_t kMaxServerListBytes = 4 * 1024 * 1024;
 constexpr auto kNotificationLifetime = std::chrono::seconds(5);
 constexpr auto kRevealCooldown = std::chrono::seconds(10);
+constexpr uint32_t kDefaultChatShortcutKey = 'Y';
 constexpr wchar_t kServerListHost[] = L"skyrim-reborn-list.skyrim-together.com";
 constexpr wchar_t kServerListPath[] = L"/list";
 
@@ -269,6 +271,78 @@ const char* GetPartyAnchorName(int aAnchor) noexcept
     default: return "Top left";
     }
 }
+
+bool IsAllowedChatShortcutKey(uint32_t aKey) noexcept
+{
+    if (aKey < VK_BACK || aKey > 0xFE)
+        return false;
+
+    switch (aKey)
+    {
+    case VK_LBUTTON:
+    case VK_RBUTTON:
+    case VK_CANCEL:
+    case VK_MBUTTON:
+    case VK_XBUTTON1:
+    case VK_XBUTTON2:
+    case VK_TAB:
+    case VK_RETURN:
+    case VK_SHIFT:
+    case VK_CONTROL:
+    case VK_MENU:
+    case VK_PAUSE:
+    case VK_CAPITAL:
+    case VK_ESCAPE:
+    case VK_LWIN:
+    case VK_RWIN:
+    case VK_APPS:
+    case VK_NUMLOCK:
+    case VK_SCROLL:
+    case VK_LSHIFT:
+    case VK_RSHIFT:
+    case VK_LCONTROL:
+    case VK_RCONTROL:
+    case VK_LMENU:
+    case VK_RMENU:
+    case VK_F2:
+    case VK_F3:
+    case VK_PROCESSKEY:
+    case VK_PACKET: return false;
+    default: return true;
+    }
+}
+
+std::string GetVirtualKeyName(uint32_t aKey)
+{
+    if ((aKey >= '0' && aKey <= '9') || (aKey >= 'A' && aKey <= 'Z'))
+        return std::string(1, static_cast<char>(aKey));
+
+    UINT scanCode = MapVirtualKeyA(aKey, MAPVK_VK_TO_VSC);
+    switch (aKey)
+    {
+    case VK_INSERT:
+    case VK_DELETE:
+    case VK_HOME:
+    case VK_END:
+    case VK_PRIOR:
+    case VK_NEXT:
+    case VK_LEFT:
+    case VK_RIGHT:
+    case VK_UP:
+    case VK_DOWN:
+    case VK_DIVIDE:
+    case VK_NUMLOCK: scanCode |= 0x100; break;
+    default: break;
+    }
+
+    char name[64]{};
+    if (scanCode != 0 && GetKeyNameTextA(static_cast<LONG>(scanCode << 16), name, static_cast<int>(std::size(name))) > 0)
+        return name;
+
+    char fallback[16]{};
+    std::snprintf(fallback, std::size(fallback), "VK 0x%02X", static_cast<unsigned int>(aKey));
+    return fallback;
+}
 } // namespace
 
 ImGuiOverlayService::ImGuiOverlayService(World& aWorld, TransportService& aTransport, entt::dispatcher& aDispatcher, ImguiService& aImguiService)
@@ -331,6 +405,7 @@ void ImGuiOverlayService::SetVisible(bool aVisible) noexcept
         SaveSettings();
         m_chatOnlyMode = false;
         m_focusChatInput = false;
+        m_capturingChatShortcut = false;
     }
 
     // Input remains captured while either the regular overlay or the F3 debug UI
@@ -351,7 +426,7 @@ bool ImGuiOverlayService::OpenChat() noexcept
     {
         m_chatOnlyMode = true;
         SetVisible(true);
-        spdlog::info("[overlay] chat opened with Enter");
+        spdlog::info("[overlay] chat opened with {}", GetVirtualKeyName(m_chatShortcutKey));
     }
 
     m_focusChatInput = true;
@@ -1182,6 +1257,56 @@ void ImGuiOverlayService::DrawSettingsTab() noexcept
         m_world.GetDebugService().SetVisible(debugVisible);
 
     ImGui::Spacing();
+    DrawSkyrimSectionHeading("CONTROLS");
+    ImGui::TextDisabled("OPEN CHAT SHORTCUT");
+    ImGui::TextColored(SkyrimAccent(), "%s", GetVirtualKeyName(m_chatShortcutKey).c_str());
+    ImGui::SameLine();
+    if (ImGui::Button(m_capturingChatShortcut ? "CANCEL CAPTURE" : "CHANGE KEY"))
+    {
+        m_capturingChatShortcut = !m_capturingChatShortcut;
+        m_chatShortcutError.clear();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(m_chatShortcutKey == kDefaultChatShortcutKey);
+    if (ImGui::Button("RESET TO Y"))
+    {
+        m_chatShortcutKey = kDefaultChatShortcutKey;
+        m_capturingChatShortcut = false;
+        m_chatShortcutError.clear();
+        saveSettings = true;
+    }
+    ImGui::EndDisabled();
+
+    if (m_capturingChatShortcut)
+    {
+        ImGui::TextColored(SkyrimAccent(0.82f), "Press the keyboard key you want to use...");
+        for (int key = VK_BACK; key <= 0xFE; ++key)
+        {
+            if (!ImGui::IsKeyPressed(key, false))
+                continue;
+
+            if (!IsAllowedChatShortcutKey(static_cast<uint32_t>(key)))
+            {
+                m_chatShortcutError = "That key is reserved by Skyrim Together or the game. Choose another key.";
+                break;
+            }
+
+            m_chatShortcutKey = static_cast<uint32_t>(key);
+            m_capturingChatShortcut = false;
+            m_chatShortcutError.clear();
+            saveSettings = true;
+            break;
+        }
+    }
+    else
+    {
+        ImGui::TextDisabled("Default: Y. Enter remains available to confirm game menus and sends chat only while the input field is focused.");
+    }
+
+    if (!m_chatShortcutError.empty())
+        ImGui::TextColored(ImVec4(0.95f, 0.48f, 0.36f, 1.f), "%s", m_chatShortcutError.c_str());
+
+    ImGui::Spacing();
     DrawSkyrimSectionHeading("PARTY HUD");
 
     if (ImGui::Checkbox("SHOW PARTY HUD", &m_partyHudEnabled))
@@ -1552,8 +1677,12 @@ void ImGuiOverlayService::DrawChatWindow() noexcept
     const bool sendClicked = ImGui::Button("SEND");
     ImGui::EndDisabled();
 
-    const bool sentFromChatOnlyMode = m_chatOnlyMode && (submitted || sendClicked);
-    if ((submitted || sendClicked) && m_chatInputBuffer[0] != '\0')
+    // A duplicated opening shortcut under Wine must not submit the still-empty
+    // field and immediately close chat-only mode. Only a real, non-empty input
+    // may complete the one-line chat interaction.
+    const bool hasChatInput = m_chatInputBuffer[0] != '\0';
+    const bool sentFromChatOnlyMode = m_chatOnlyMode && (submitted || sendClicked) && hasChatInput;
+    if ((submitted || sendClicked) && hasChatInput)
         SubmitChatInput();
     if (sentFromChatOnlyMode)
         SetVisible(false);
@@ -1954,6 +2083,9 @@ void ImGuiOverlayService::LoadSettings() noexcept
         m_partyHudOffsetX = std::clamp(settings.value("party_hud_offset_x", 2.f), 0.f, 84.f);
         m_partyHudOffsetY = std::clamp(settings.value("party_hud_offset_y", 8.f), 2.f, 50.f);
 
+        const int chatShortcutKey = settings.value("chat_shortcut_key", static_cast<int>(kDefaultChatShortcutKey));
+        m_chatShortcutKey = IsAllowedChatShortcutKey(static_cast<uint32_t>(chatShortcutKey)) ? static_cast<uint32_t>(chatShortcutKey) : kDefaultChatShortcutKey;
+
         m_partyHudAutoHideSeconds = settings.value("party_hud_auto_hide_seconds", 1);
         if (m_partyHudAutoHideSeconds != 1 && m_partyHudAutoHideSeconds != 3 && m_partyHudAutoHideSeconds != 5)
             m_partyHudAutoHideSeconds = 1;
@@ -1990,6 +2122,7 @@ void ImGuiOverlayService::SaveSettings() const noexcept
         settings["party_hud_offset_y"] = m_partyHudOffsetY;
         settings["show_network_hud"] = m_networkHudEnabled;
         settings["ui_scale"] = m_uiScale;
+        settings["chat_shortcut_key"] = m_chatShortcutKey;
 
         std::ofstream file(settingsPath, std::ios::trunc);
         if (!file)

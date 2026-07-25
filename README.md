@@ -111,13 +111,15 @@ change, it preserves the original file as
 again** to reuse the chosen mode automatically. Run the launcher with `--configure`
 to show it again.
 
-After loading a save, press `F2` to open the interface. While connected, `Enter`
-opens the chat directly with its input field focused; sending the message returns
-control to the game. `Esc` or `F2` also returns mouse and keyboard control to the
-game. The internal ImGui debugger is available with `F3`; press `F3` again or `Esc`
-to close it. The pointer is confined to the game client while either ImGui layer owns
-input, but Alt+Tab releases it immediately. Returning to the game re-registers raw
-mouse and keyboard input, so the open interface does not need to be toggled to recover.
+After loading a save, press `F2` to open the interface. While connected, `Y`
+opens the chat directly with its input field focused; `Enter` sends the message
+and returns control to the game. `Y` is the default and can be changed under
+**F2 > Settings > Controls**. `Esc` or `F2` also returns mouse and keyboard
+control to the game. The internal ImGui debugger is available with `F3`; press
+`F3` again or `Esc` to close it. The pointer is confined to the game client
+while either ImGui layer owns input, but Alt+Tab releases it immediately.
+Returning to the game re-registers raw mouse and keyboard input, so the open
+interface does not need to be toggled to recover.
 
 ## Native interface
 

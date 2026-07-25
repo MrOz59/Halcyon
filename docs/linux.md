@@ -199,7 +199,7 @@ services:
 - search, filters, favorites, and visual version validation;
 - player names, levels, locations, health, and party state;
 - global, party, and local chat in a separate window, with timestamps, wrapped
-  messages, input history, and an `Enter` shortcut that focuses chat directly;
+  messages, input history, and a configurable chat shortcut (`Y` by default);
 - player dialogue plus `/help`, `/global`, `/local`, `/party`, and `/settime`;
 - the `Reveal Players` action;
 - party creation, incoming and outgoing invitations, membership management,
@@ -277,9 +277,12 @@ The launcher accepts:
 In-game UI shortcuts:
 
 - `F2` — toggle the native multiplayer overlay;
-- `Enter` — open and focus chat while connected;
+- `Y` by default — open and focus chat while connected (`Enter` sends the message);
 - `F3` — toggle the internal ImGui debugger;
 - `Esc` — close the active debug layer or overlay.
+
+The chat shortcut can be changed under **F2 > Settings > Controls** and is
+persisted in `Data/SkyrimTogetherReborn/native_overlay.json`.
 
 Primary files:
 
