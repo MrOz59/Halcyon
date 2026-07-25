@@ -21,7 +21,9 @@ The main path has been validated in the development environment:
 - the interface opens and closes with `F2`;
 - direct connections and the public server browser work;
 - connection to vanilla servers using protocol `v1.8.0` has been confirmed;
-- the player list and chat work, with chat in a separate window.
+- the player list and chat work, with chat in a separate window;
+- text fields remain focused during normal overlay use and the cursor no longer
+  competes with Skyrim's camera recentering;
 - the Proton launcher can apply borderless, fullscreen, or windowed display mode.
 
 The native interface also implements party management, invitations, chat channels,
@@ -91,6 +93,10 @@ vanilla server connections. If the compatibility tool was just changed in Steam,
 wait for Steam to write `config/config.vdf` before starting the Vortex tool;
 otherwise Vortex may still read the previous selection.
 
+Runtime testing of build `4dfa345` confirmed stable text entry and smooth cursor
+movement during normal native-UI use. The current tree additionally rebuilds raw-input
+registration when focus returns after Alt+Tab.
+
 On the first Proton launch, a small native display picker offers:
 
 - **Borderless window** (recommended), using the current Proton desktop resolution;
@@ -109,7 +115,9 @@ After loading a save, press `F2` to open the interface. While connected, `Enter`
 opens the chat directly with its input field focused; sending the message returns
 control to the game. `Esc` or `F2` also returns mouse and keyboard control to the
 game. The internal ImGui debugger is available with `F3`; press `F3` again or `Esc`
-to close it.
+to close it. The pointer is confined to the game client while either ImGui layer owns
+input, but Alt+Tab releases it immediately. Returning to the game re-registers raw
+mouse and keyboard input, so the open interface does not need to be toggled to recover.
 
 ## Native interface
 
@@ -179,9 +187,18 @@ layouts or relocation types fail before the game is resumed.
 ### Interface and input
 
 Every CEF call is guarded when the runtime has not been initialized. The ImGui UI
-reuses the client's D3D11 hook, while DirectInput routing was adjusted so `F2` and
-the `F3` debugger share input capture safely and always return control to the game
-when both interfaces are closed.
+reuses the client's D3D11 hook. While `F2` or the `F3` debugger is open, raw mouse
+deltas update an ImGui-owned virtual cursor rendered in the same D3D11 frame; the
+physical cursor is never repositioned every frame. Mouse, keyboard, character, and
+raw-input messages consumed by ImGui are not dispatched a second time to Skyrim.
+This prevents cursor lag, pointer snap-back, clicks leaking to another window, and
+text fields losing focus because the game recaptured input.
+
+The physical pointer is clipped to the game client only while the window is focused.
+Alt+Tab releases that clip. On `WM_SETFOCUS`, the DirectInput hook explicitly
+re-registers the raw mouse and keyboard devices because Wine may discard their
+registration without changing the hook's logical state. Normal clicks do not trigger
+this refresh, preserving the active ImGui text field.
 
 ### Networking
 
@@ -224,7 +241,11 @@ Common errors:
 - `cannot_resolve_address`: invalid hostname or a DNS failure inside the prefix;
 - rejection during authentication: server version, password, or mod policy;
 - the UI does not appear but input is captured: attach `tp_client.log` and confirm
-  that the installed artifact matches the latest commit.
+  that the installed artifact matches the latest commit;
+- the UI remains visible after Alt+Tab but the pointer does not move: search
+  `tp_client.log` for
+  `[input] raw input devices reacquired after window focus returned`. Its absence
+  indicates an older artifact or a focus event that did not reach the game window.
 
 ## Known limitations
 

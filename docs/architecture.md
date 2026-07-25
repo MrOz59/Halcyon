@@ -150,3 +150,49 @@ The Linux work therefore focuses on:
    Wine, particularly the manual loader and CEF.
 
 See [linux.md](linux.md) for the implemented architecture and current status.
+
+## Implemented Proton runtime
+
+The current fork keeps the client as Windows PE code but changes the process and UI
+boundaries under Wine:
+
+```text
+SkyrimTogether.exe
+  │
+  ├── detect Wine/Proton
+  ├── CreateProcess(SkyrimSE.exe, SUSPENDED)
+  ├── restore and validate the Steam CEG-protected image
+  ├── inject STClientPayload.dll
+  ├── wait for client initialization
+  └── resume the game entry point
+         │
+         ▼
+      Tilted client in SkyrimSE.exe
+         ├── native ImGui/D3D11 multiplayer UI
+         ├── CEF skipped under Wine
+         ├── software cursor driven by raw mouse deltas
+         └── vanilla v1.8.0 transport and services
+```
+
+The external-process launch lets Wine register Skyrim's image and unwind metadata as
+a normal module. The payload restores the protected entry path and installs the
+client before the main thread runs. High-entropy ASLR is supported by validating the
+remote PE headers and applying supported relocations that affect the decrypted
+`.text` bytes.
+
+### Proton input boundary
+
+The native UI and Skyrim share the same Win32 window. When the `F2` overlay or `F3`
+debugger is active, the DirectInput hook suppresses game-facing device data and
+`InputService` consumes the corresponding Win32/raw-input messages after forwarding
+them to ImGui. This prevents the original Skyrim window procedure from recapturing
+the pointer or deactivating a text field.
+
+Mouse deltas update a virtual client-space cursor that ImGui renders through D3D11.
+The physical cursor stays hidden and confined to the focused client area; it is not
+repositioned every frame. Focus loss releases confinement, and focus return rebuilds
+Wine's raw-input registration before interaction resumes.
+
+See [linux.md](linux.md) for installation, compatibility results, diagnostics, and
+the complete implemented status. See [cef-proton.md](cef-proton.md) for the CEF
+decision record.

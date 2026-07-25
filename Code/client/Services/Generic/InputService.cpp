@@ -169,7 +169,7 @@ void SetSystemCursorVisible(bool aVisible) noexcept
     }
 }
 
-void InputService::RefreshInputState() noexcept
+void InputService::RefreshInputState(bool aReacquireRawInput) noexcept
 {
     if (!s_pOverlay)
         return;
@@ -180,13 +180,18 @@ void InputService::RefreshInputState() noexcept
     const bool regularUiVisible = pNativeOverlay ? pNativeOverlay->IsVisible() : s_pOverlay->GetActive();
     const bool inputActive = regularUiVisible || debugVisible;
 
-    // Re-registering the raw input devices while the overlay already owns input
-    // can make ImGui lose the active text field, especially when Wine sends
-    // WM_SETFOCUS after a mouse click. Only touch the hook when ownership
-    // actually changes.
+    // Re-registering the raw input devices during ordinary overlay interaction
+    // can make ImGui lose the active text field. Normally only touch the hook
+    // when ownership changes; after a real window-focus return, force a refresh
+    // because Wine may have silently discarded the registration.
     auto& inputHook = TiltedPhoques::DInputHook::Get();
     if (inputHook.IsEnabled() != inputActive)
         inputHook.SetEnabled(inputActive);
+    else if (aReacquireRawInput && inputActive)
+    {
+        inputHook.Update();
+        spdlog::info("[input] raw input devices reacquired after window focus returned");
+    }
 
     // The Proton path and the standalone F3 debugger use a software cursor drawn
     // by ImGui. Keeping the physical cursor hidden prevents Skyrim and Wine from
@@ -507,7 +512,7 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
         else if (uMsg == WM_SETFOCUS && imguiInputActive)
         {
             // Wine can lose raw-input registration while focus changes.
-            InputService::RefreshInputState();
+            InputService::RefreshInputState(true);
         }
         else if (uMsg == WM_INPUTLANGCHANGE)
         {
@@ -631,7 +636,7 @@ LRESULT CALLBACK InputService::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
             pRenderer->SetCursorVisible(true);
         }
 
-        InputService::RefreshInputState();
+        InputService::RefreshInputState(true);
     }
     else if (uMsg == WM_INPUTLANGCHANGE)
     {

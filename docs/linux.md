@@ -23,6 +23,9 @@ DirectInput ABI. The dedicated server has a separate native Linux path.
 - [x] CEF is not initialized under Wine;
 - [x] the ImGui overlay opens with `F2` and releases input correctly;
 - [x] the internal ImGui debugger opens with `F3` and shares input capture safely;
+- [x] ImGui text fields and its software cursor remain responsive without cursor
+      recentering or input leaking to other windows;
+- [x] Alt+Tab releases cursor confinement and focus return restores raw input;
 - [x] the launcher applies a persistent Proton display mode, with borderless as the
       recommended default;
 - [x] direct connections, the public list, favorites, players, and chat work;
@@ -62,6 +65,11 @@ The current recommended path is:
 3. force Valve Proton 11.0, GE-Proton11-1, or the validated Proton-CachyOS release
    on that shortcut;
 4. launch STR from Steam.
+
+Build `4dfa345` was tested in-game with stable text fields and smooth software-cursor
+movement during normal native-UI interaction. The subsequent focus-return change
+adds forced raw-input re-registration for the Alt+Tab case without restoring
+per-click hook resets.
 
 ## Why the original launcher failed
 
@@ -203,12 +211,40 @@ services:
 - optional compact latency, packet-loss, and bandwidth statistics;
 - an enforced ten-second `Reveal Players` cooldown;
 - configurable UI scale, HUD visibility, and access to the `F3` debugger;
-- DirectInput capture and release synchronized with visibility;
+- DirectInput capture and release synchronized with visibility and window focus;
 - settings stored in `Data/SkyrimTogetherReborn/native_overlay.json`.
 
 The native implementation uses the existing client events, party service, and wire
 messages. It does not add fork-specific network messages, so these actions remain
 compatible with vanilla `v1.8.0` servers.
+
+### Input ownership and cursor model
+
+Skyrim, Wine, and the Win32 ImGui backend share one game window, but only one of them
+may own interactive input at a time. The Proton path uses this sequence while the
+`F2` overlay or `F3` debugger is visible:
+
+1. `DInputHook` suppresses the keyboard and mouse data returned to Skyrim;
+2. `InputService` forwards Win32 and raw-input events to ImGui;
+3. input messages handled by ImGui are consumed before Skyrim's original window
+   procedure receives them;
+4. relative raw mouse deltas update a client-space virtual cursor;
+5. `ImguiService` writes that position to `ImGuiIO::MousePos` and draws the pointer
+   through `MouseDrawCursor` in the D3D11 frame.
+
+The implementation does not call `SetCursorPos` every frame. That earlier approach
+fought Skyrim's camera recentering under Wine, which caused cursor lag, snap-back,
+intermittent text-field deactivation, and occasional clicks outside the game. The
+physical pointer is now hidden and clipped to the game client while the window is
+focused, preventing an invisible host cursor from clicking the launcher console or
+desktop.
+
+`WM_KILLFOCUS` releases cursor confinement so Alt+Tab remains usable. When
+`WM_SETFOCUS` returns with an ImGui layer still open, `InputService` forces
+`DInputHook::Update()` even though its logical enabled state did not change. This
+re-registers raw mouse and keyboard devices that Wine may have silently dropped.
+Ordinary mouse clicks use the non-forced refresh path and therefore do not disturb
+the active ImGui text field.
 
 ## Network compatibility
 
@@ -255,6 +291,16 @@ Primary files:
 The client records the endpoint, route type (direct IP or name resolution), protocol,
 commit, loaded-mod count, and authentication stage. Timeouts, DNS failures, and local
 network problems are translated into distinct UI messages.
+
+After returning from Alt+Tab while the native UI is open, a successful input recovery
+adds this client-log line:
+
+```text
+[input] raw input devices reacquired after window focus returned
+```
+
+If the UI remains visible but its mouse does not move, verify that this line appears
+after the focus return and that the installed artifact contains the expected commit.
 
 The launcher console may remain blank when Steam owns the Proton process. This is not
 a failure signal when the game and UI continue to load; the file logs above remain

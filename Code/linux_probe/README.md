@@ -19,8 +19,8 @@ xmake build LinuxProbeLoader LinuxProbePayload
 
 ## Hypothesis
 
-The investigation at the time, recorded in `docs/cef-proton.md` and the history of
-the `linux-port` branch, identified this sequence:
+The investigation at the time, recorded in `docs/linux.md`, `docs/architecture.md`,
+and the history of the `linux-port` branch, identified this sequence:
 
 1. Inside `gameMain()`, Skyrim names threads through the legacy MSVC mechanism:
    `RaiseException(0x406D1388)` = `EXCEPTION_WINE_NAME_THREAD`.
