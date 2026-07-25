@@ -111,6 +111,7 @@ private:
 
     bool m_visible = false;
     bool m_connected = false;
+    bool m_connecting = false;
     bool m_scrollChatToBottom = false;
     bool m_serverListLoading = false;
     bool m_serverListLoaded = false;

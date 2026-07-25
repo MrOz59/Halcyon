@@ -75,7 +75,7 @@ void ServerListService::PostAnnouncement(String acName, String acDesc, String ac
                                          uint16_t aPlayerCount, uint16_t aPlayerMaxCount, String acTagList,
                                          bool aPublic, bool aPassword, int32 aFlags) noexcept
 {
-    const std::string kVersion{BUILD_COMMIT};
+    const std::string kVersion{PROTOCOL_VERSION};
     const httplib::Params params{
         {"name", std::string(acName.c_str(), acName.size())},
         {"desc", std::string(acDesc.c_str(), acDesc.size())},

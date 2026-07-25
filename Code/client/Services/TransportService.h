@@ -51,6 +51,7 @@ private:
     World& m_world;
     entt::dispatcher& m_dispatcher;
     bool m_connected;
+    bool m_authenticating = false;
     String m_serverPassword{};
     uint32_t m_localPlayerId;
 

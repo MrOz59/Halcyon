@@ -88,7 +88,9 @@ Console::Command<int64_t> SetDifficulty(
         spdlog::get("ConOut")->info("Difficulty has been set to {}.", aDiff);
     });
 
-Console::Command<> ShowVersion("version", "Show the version the server was compiled with", [](Console::ArgStack&) { spdlog::get("ConOut")->info("Server " BUILD_COMMIT); });
+Console::Command<> ShowVersion(
+    "version", "Show the version the server was compiled with",
+    [](Console::ArgStack&) { spdlog::get("ConOut")->info("Server build {} (protocol {})", BUILD_COMMIT, PROTOCOL_VERSION); });
 
 Console::Command<> CrashServer(
     "crash", "Crashes the server, don't use!",
@@ -182,7 +184,7 @@ GameServer::GameServer(Console::ConsoleRegistry& aConsole) noexcept
     m_isPasswordProtected = strcmp(sPassword.value(), "") != 0;
 
     UpdateInfo();
-    spdlog::info("Server {} started on port {}", BUILD_COMMIT, GetPort());
+    spdlog::info("Server build {} (protocol {}) started on port {}", BUILD_COMMIT, PROTOCOL_VERSION, GetPort());
     UpdateTitle();
 
     m_pWorld = MakeUnique<World>();
@@ -813,7 +815,7 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
     info.m_addrRemote.ToString(remoteAddress, 48, false);
 
     AuthenticationResponse serverResponse;
-    serverResponse.Version = BUILD_COMMIT;
+    serverResponse.Version = PROTOCOL_VERSION;
 
     using RT = AuthenticationResponse::ResponseType;
     auto sendKick = [&](const RT type)
@@ -825,7 +827,7 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
     };
 #if 1
     // to make our testing life a bit easier.
-    if (acRequest->Version != BUILD_COMMIT)
+    if (acRequest->Version != PROTOCOL_VERSION)
     {
         spdlog::info("New player {:x} '{}' tried to connect with client {} - Version mismatch", aConnectionId, remoteAddress, acRequest->Version.c_str());
         sendKick(RT::kWrongVersion);

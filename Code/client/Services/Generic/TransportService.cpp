@@ -31,6 +31,34 @@ static constexpr wchar_t kMO2DllName[] = L"usvfs_x64.dll";
 
 using TiltedPhoques::Packet;
 
+namespace
+{
+const char* DescribeDisconnectReason(Client::EDisconnectReason aReason) noexcept
+{
+    switch (aReason)
+    {
+    case Client::kTimeout: return "timeout";
+    case Client::kLocalProblem: return "local network problem";
+    case Client::kKicked: return "closed by server";
+    case Client::kCannotResolve: return "could not resolve address";
+    case Client::kAborted: return "aborted locally";
+    case Client::kNormal: return "normal";
+    default: return "unknown";
+    }
+}
+
+const char* ConnectionErrorForDisconnectReason(Client::EDisconnectReason aReason) noexcept
+{
+    switch (aReason)
+    {
+    case Client::kTimeout: return R"({"error":"network_timeout"})";
+    case Client::kLocalProblem: return R"({"error":"local_network_error"})";
+    case Client::kCannotResolve: return R"({"error":"cannot_resolve_address"})";
+    default: return nullptr;
+    }
+}
+} // namespace
+
 TransportService::TransportService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
     , m_dispatcher(aDispatcher)
@@ -111,8 +139,10 @@ void TransportService::OnConsume(const void* apData, uint32_t aSize)
 
 void TransportService::OnConnected()
 {
+    m_authenticating = true;
+
     AuthenticationRequest request{};
-    request.Version = BUILD_COMMIT;
+    request.Version = PROTOCOL_VERSION;
     request.SKSEActive = IsScriptExtenderLoaded();
     request.MO2Active = GetModuleHandleW(kMO2DllName);
 
@@ -162,16 +192,32 @@ void TransportService::OnConnected()
     request.PlayerTime.Month = pGameTime->GameMonth->f;
     request.PlayerTime.Day = pGameTime->GameDay->f;
 
+    spdlog::info(
+        "Transport connected; authenticating with protocol {} (build {}, {} loaded mods, SKSE {}, MO2 {})", PROTOCOL_VERSION, BUILD_COMMIT, request.UserMods.ModList.size(),
+        request.SKSEActive, request.MO2Active);
     Send(request);
 }
 
 void TransportService::OnDisconnected(EDisconnectReason aReason)
 {
+    const bool wasAuthenticating = m_authenticating;
     m_connected = false;
+    m_authenticating = false;
 
-    spdlog::warn("Disconnected from server {}", aReason);
+    spdlog::warn("Disconnected from server: {} (code {})", DescribeDisconnectReason(aReason), static_cast<int>(aReason));
 
     m_dispatcher.trigger(DisconnectedEvent());
+
+    const char* pErrorDetail = ConnectionErrorForDisconnectReason(aReason);
+    if (!pErrorDetail && aReason == kKicked && wasAuthenticating)
+        pErrorDetail = R"({"error":"server_closed_during_authentication"})";
+
+    if (pErrorDetail)
+    {
+        ConnectionErrorEvent errorEvent;
+        errorEvent.ErrorDetail = pErrorDetail;
+        m_dispatcher.trigger(errorEvent);
+    }
 }
 
 void TransportService::OnUpdate()
@@ -195,10 +241,13 @@ void TransportService::HandleDisconnected(const DisconnectedEvent& acEvent) noex
 
 void TransportService::HandleAuthenticationResponse(const AuthenticationResponse& acMessage) noexcept
 {
+    m_authenticating = false;
+
     using AR = AuthenticationResponse::ResponseType;
     if (acMessage.Type == AR::kAccepted)
     {
         m_connected = true;
+        spdlog::info("Server accepted authentication for protocol {} (player id {})", PROTOCOL_VERSION, acMessage.PlayerId);
 
         m_world.SetServerSettings(acMessage.Settings);
 
@@ -218,7 +267,7 @@ void TransportService::HandleAuthenticationResponse(const AuthenticationResponse
     {
     case AR::kWrongVersion:
         ErrorInfo += "\"error\": \"wrong_version\", \"data\": {";
-        ErrorInfo += fmt::format("\"expectedVersion\": \"{}\", \"version\": \"{}\"", acMessage.Version, BUILD_COMMIT);
+        ErrorInfo += fmt::format("\"expectedVersion\": \"{}\", \"version\": \"{}\"", acMessage.Version, PROTOCOL_VERSION);
         ErrorInfo += "}";
         break;
     case AR::kModsMismatch:

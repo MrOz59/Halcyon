@@ -158,6 +158,7 @@ void ImGuiOverlayService::AddSystemMessage(const std::string& acText) noexcept
 void ImGuiOverlayService::OnConnected(const ConnectedEvent&) noexcept
 {
     m_connected = true;
+    m_connecting = false;
     m_statusLine = "Connected";
     m_errorLine.clear();
     AddSystemMessage("Connected to server.");
@@ -167,6 +168,7 @@ void ImGuiOverlayService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
     const bool wasConnected = m_connected;
     m_connected = false;
+    m_connecting = false;
     m_statusLine = "Disconnected";
     m_players.clear();
 
@@ -187,6 +189,7 @@ void ImGuiOverlayService::OnConnectionError(const ConnectionErrorEvent& acEvent)
     }
 
     m_connected = false;
+    m_connecting = false;
     m_statusLine = "Connection failed";
     m_errorLine = message;
     AddSystemMessage("Error: " + message);
@@ -244,10 +247,10 @@ void ImGuiOverlayService::DrawMainWindow() noexcept
         return;
     }
 
-    const ImVec4 statusColor = m_connected ? ImVec4(0.35f, 0.85f, 0.45f, 1.f) : ImVec4(0.75f, 0.78f, 0.82f, 1.f);
+    const ImVec4 statusColor = m_connected ? ImVec4(0.35f, 0.85f, 0.45f, 1.f) : (m_connecting ? ImVec4(1.f, 0.78f, 0.28f, 1.f) : ImVec4(0.75f, 0.78f, 0.82f, 1.f));
     ImGui::TextColored(statusColor, "%s", m_statusLine.c_str());
     ImGui::SameLine();
-    ImGui::TextDisabled("  |  Build %s  |  F2 or Esc to close", BUILD_COMMIT);
+    ImGui::TextDisabled("  |  Protocol %s  |  Build %s  |  F2 or Esc to close", PROTOCOL_VERSION, BUILD_COMMIT);
 
     if (!m_warningLine.empty())
     {
@@ -303,7 +306,7 @@ void ImGuiOverlayService::DrawConnectionTab() noexcept
     ImGui::TextWrapped("Connect directly to a private or self-hosted server. Use the Public servers tab to browse announced servers.");
     ImGui::Spacing();
 
-    ImGui::BeginDisabled(m_connected);
+    ImGui::BeginDisabled(m_connected || m_connecting);
     ImGui::SetNextItemWidth(std::min(460.f, ImGui::GetContentRegionAvail().x));
     ImGui::InputTextWithHint("##manual_address", "Address or hostname", m_addressBuffer, std::size(m_addressBuffer));
 
@@ -315,7 +318,7 @@ void ImGuiOverlayService::DrawConnectionTab() noexcept
     ImGui::EndDisabled();
 
     ImGui::Spacing();
-    if (!m_connected)
+    if (!m_connected && !m_connecting)
     {
         if (ImGui::Button("Connect", ImVec2(140.f, 0.f)))
         {
@@ -324,7 +327,7 @@ void ImGuiOverlayService::DrawConnectionTab() noexcept
             Connect(m_addressBuffer, static_cast<uint16_t>(port), m_passwordBuffer);
         }
     }
-    else if (ImGui::Button("Disconnect", ImVec2(140.f, 0.f)))
+    else if (ImGui::Button(m_connecting ? "Cancel" : "Disconnect", ImVec2(140.f, 0.f)))
     {
         World& world = m_world;
         world.GetRunner().Queue([&world] { world.GetTransport().Close(); });
@@ -437,7 +440,7 @@ void ImGuiOverlayService::DrawServerBrowserTab() noexcept
                 m_selectedServerKey = key;
                 m_serverPasswordBuffer[0] = '\0';
 
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !pServer->passwordProtected && !m_connected)
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !pServer->passwordProtected && !m_connected && !m_connecting)
                     Connect(pServer->address, pServer->port, {});
             }
 
@@ -485,7 +488,7 @@ void ImGuiOverlayService::DrawServerBrowserTab() noexcept
             ImGui::SameLine();
         }
 
-        ImGui::BeginDisabled(m_connected);
+        ImGui::BeginDisabled(m_connected || m_connecting);
         if (ImGui::Button("Connect to selected"))
             Connect(pSelectedServer->address, pSelectedServer->port, m_serverPasswordBuffer);
         ImGui::EndDisabled();
@@ -595,9 +598,11 @@ void ImGuiOverlayService::Connect(const std::string& acAddress, uint16_t aPort, 
 
     const std::string endpoint = MakeEndpoint(address, aPort);
     m_transport.SetServerPassword(acPassword);
+    m_connecting = true;
     m_statusLine = "Connecting to " + endpoint + "...";
     m_errorLine.clear();
 
+    spdlog::info("[overlay] connecting to {} with protocol {} (build {})", endpoint, PROTOCOL_VERSION, BUILD_COMMIT);
     World& world = m_world;
     world.GetRunner().Queue([&world, endpoint] { world.GetTransport().Connect(endpoint); });
 }
@@ -858,13 +863,8 @@ std::string ImGuiOverlayService::MakeEndpoint(const std::string& acAddress, uint
 
 bool ImGuiOverlayService::IsVersionCompatible(const PublicServer& acServer) noexcept
 {
-    const std::string clientVersion = NormalizeVersion(BUILD_COMMIT);
+    const std::string clientVersion = NormalizeVersion(PROTOCOL_VERSION);
     const std::string serverVersion = NormalizeVersion(acServer.version);
-
-    // Fork builds without an upstream tag use a SHA-like version. In that case
-    // the UI cannot infer protocol compatibility, so it does not hide servers.
-    if (clientVersion.find('.') == std::string::npos)
-        return true;
 
     return clientVersion == serverVersion;
 }
@@ -907,6 +907,14 @@ std::string ImGuiOverlayService::DescribeConnectionError(const std::string& acDe
         return "Your enabled mod list does not match the server.";
     if (error == "client_mods_disallowed")
         return "The server does not allow the active client-side mod configuration.";
+    if (error == "network_timeout")
+        return "The server did not answer before the connection timed out. It may be offline or blocking UDP traffic.";
+    if (error == "local_network_error")
+        return "The local network stack could not maintain the connection.";
+    if (error == "cannot_resolve_address")
+        return "The server address could not be resolved.";
+    if (error == "server_closed_during_authentication")
+        return "The server closed the connection during authentication without returning a reason.";
     if (error == "no_reason")
         return "The server rejected the connection without providing a reason.";
 
