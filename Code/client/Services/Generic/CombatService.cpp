@@ -279,11 +279,14 @@ void CombatService::BeginPvpBar(Actor* apRemote) noexcept
     if (!pTrueHud)
         return;
 
+    // Without the target slot a bar would be created and then hidden again, so
+    // there is nothing to gain from asking.
+    if (!TRUEHUD_API::HasTargetControl())
+        return;
+
     const auto cHandle = apRemote->GetHandle();
 
-    // TrueHUD drops a bar request whose handle is zero or the engine's "null
-    // handle" (0x100000). Remote players are temporary actors, so it is worth
-    // knowing which handle they actually resolve to.
+    // TrueHUD drops a request whose handle is zero or the engine's null handle.
     if (!cHandle.handle.iBits || cHandle.handle.iBits == 0x100000)
     {
         spdlog::warn("[truehud] remote player {:X} has no usable handle ({:X}) - no bar", apRemote->formID, cHandle.handle.iBits);
@@ -296,13 +299,20 @@ void CombatService::BeginPvpBar(Actor* apRemote) noexcept
     engagement.lastDamage = std::chrono::steady_clock::now();
     engagement.remoteHandle = cHandle;
 
+    // Marking the player as TrueHUD's target is what actually makes the bar
+    // visible. Every other category is additionally gated on the actor being in
+    // combat (InfoBarBase: `targetType > kTarget && !IsInCombat()` hides the
+    // bar), and a remote player never is - the game refuses to start combat
+    // between actors that share the player faction. The target category has no
+    // such condition.
+    pTrueHud->SetTarget(TRUEHUD_API::kSkyrimTogetherPluginHandle, cHandle);
+
     // Only on the first hit of a fight: TrueHUD keeps its own widget list, so
     // asking again every hit would be pointless work at 20 hits a second.
     if (cIsNew)
     {
         pTrueHud->AddActorInfoBar(cHandle);
-        spdlog::info("[truehud] requested bar for remote player {:X} (handle {:X}, thread {} vs truehud {})", apRemote->formID, cHandle.handle.iBits, GetCurrentThreadId(),
-                     pTrueHud->GetTrueHUDThreadId());
+        spdlog::info("[truehud] bar + target set for remote player {:X} (handle {:X})", apRemote->formID, cHandle.handle.iBits);
     }
 }
 
@@ -373,4 +383,9 @@ void CombatService::RunPvpBarUpdates() noexcept
 
     for (const uint32_t cRemoteFormId : ended)
         m_pvpEngagements.erase(cRemoteFormId);
+
+    // Release the target once no fight is left, so a finished opponent does not
+    // stay marked as our target for the rest of the session.
+    if (m_pvpEngagements.empty() && !ended.empty())
+        pTrueHud->SetTarget(TRUEHUD_API::kSkyrimTogetherPluginHandle, {});
 }

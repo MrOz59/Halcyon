@@ -44,4 +44,29 @@ IVTrueHUD1* RequestTrueHUDInterface() noexcept
 
     return s_pInterface;
 }
+
+bool HasTargetControl() noexcept
+{
+    // Requested once. TrueHUD hands the target slot to a single owner, so a
+    // refusal is final for the session and must be respected: another mod is
+    // driving the target and fighting over it would break both.
+    static const bool s_hasControl = []()
+    {
+        auto* pTrueHud = RequestTrueHUDInterface();
+        if (!pTrueHud)
+            return false;
+
+        const APIResult cResult = pTrueHud->RequestTargetControl(kSkyrimTogetherPluginHandle);
+        if (cResult == APIResult::OK || cResult == APIResult::AlreadyGiven)
+        {
+            spdlog::info("[truehud] target control granted - remote player health bars will be shown");
+            return true;
+        }
+
+        spdlog::warn("[truehud] target control unavailable (result {}) - another mod owns it, no health bars", static_cast<uint32_t>(cResult));
+        return false;
+    }();
+
+    return s_hasControl;
+}
 } // namespace TRUEHUD_API

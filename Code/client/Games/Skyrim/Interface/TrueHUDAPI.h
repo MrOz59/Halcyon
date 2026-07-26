@@ -103,6 +103,12 @@ public:
     virtual APIResult Slot21_ReleaseSpecialResourceBarControl(PluginHandle) noexcept = 0;
 };
 
+// TrueHUD identifies API consumers by an SKSE plugin handle, but only ever
+// compares it for equality to track who owns a resource. This project is not an
+// SKSE plugin and has no real handle, so any value other than SKSE's
+// kInvalidPluginHandle (0xFFFFFFFF) works as an identity.
+constexpr PluginHandle kSkyrimTogetherPluginHandle = 0x53544F47; // 'STOG'
+
 /**
  * @brief Fetch TrueHUD's API, or nullptr when the mod is not installed.
  *
@@ -110,4 +116,15 @@ public:
  * it. Never loads the library itself, so a missing TrueHUD costs nothing.
  */
 [[nodiscard]] IVTrueHUD1* RequestTrueHUDInterface() noexcept;
+
+/**
+ * @brief Whether TrueHUD granted us control of its target slot.
+ *
+ * An info bar is only shown unconditionally for TrueHUD's current target;
+ * every other category additionally requires the actor to be in combat, which
+ * remote players never are. Owning the target slot is therefore what makes a
+ * bar appear at all. Another mod may hold it (True Directional Movement does),
+ * in which case this stays false and no bar is shown.
+ */
+[[nodiscard]] bool HasTargetControl() noexcept;
 } // namespace TRUEHUD_API
