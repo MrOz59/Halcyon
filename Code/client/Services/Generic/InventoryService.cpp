@@ -43,6 +43,51 @@ void InventoryService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 {
     RunWeaponStateUpdates();
     RunNakedNPCBugChecks();
+    RunEarlyEquipmentUpdates();
+}
+
+void InventoryService::RunEarlyEquipmentUpdates() noexcept
+{
+    if (!m_transport.IsConnected())
+        return;
+
+    auto view = m_world.view<FormIdComponent, EarlyEquipmentBufferComponent>();
+    if (view.begin() == view.end())
+        return;
+
+    // Note that RunNakedNPCBugChecks covers a different problem: an actor with no
+    // body piece at all, repaired locally with ResetInventory. It does not help an
+    // actor whose weapon or helmet never reached the server because the equip
+    // happened before the assignment response.
+    Vector<entt::entity> sent;
+
+    for (auto entity : view)
+    {
+        const auto& formIdComponent = view.get<FormIdComponent>(entity);
+
+        const std::optional<uint32_t> cServerId = Utils::GetServerId(entity);
+        if (!cServerId.has_value())
+            continue; // still waiting for the assignment
+
+        Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+        if (!pActor)
+        {
+            sent.push_back(entity);
+            continue;
+        }
+
+        RequestEquipmentChanges request;
+        request.ServerId = cServerId.value();
+        request.CurrentInventory = pActor->GetEquipment();
+
+        m_transport.Send(request);
+        sent.push_back(entity);
+
+        spdlog::info("Sent deferred equipment for actor {:X} (server id {:X})", formIdComponent.Id, cServerId.value());
+    }
+
+    for (const auto entity : sent)
+        m_world.remove<EarlyEquipmentBufferComponent>(entity);
 }
 
 void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEvent) noexcept
@@ -90,7 +135,16 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
     std::optional<uint32_t> serverIdRes = Utils::GetServerId(*iter);
     if (!serverIdRes.has_value())
     {
-        spdlog::error(__FUNCTION__ ": failed to find server id, actor id: {:X}, item id: {:X}, isAmmo: {}, unequip: {}, slot: {:X}", acEvent.ActorId, acEvent.ItemId, acEvent.IsAmmo, acEvent.Unequip, acEvent.EquipSlotId);
+        // EquipManager reports an equip as soon as the actor is flagged local,
+        // but the server id only exists once the assignment response arrives.
+        // Dropping the change here left the actor unequipped on every other
+        // client for good - the "naked NPC" - and latency widens the window.
+        //
+        // Remember that something changed rather than the change itself: the
+        // request carries the actor's full equipment anyway, so replaying it once
+        // the id exists is both simpler and self-correcting.
+        m_world.emplace_or_replace<EarlyEquipmentBufferComponent>(*iter);
+        spdlog::debug(__FUNCTION__ ": no server id yet for actor {:X}, equipment will be sent on assignment", acEvent.ActorId);
         return;
     }
 

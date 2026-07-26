@@ -61,6 +61,15 @@ private:
     * and resets their inventory.
     */
     void RunNakedNPCBugChecks() noexcept;
+    /**
+     * Sends the equipment of actors whose equip happened before they had a server
+     * id, once the assignment response has arrived. Without this the change was
+     * dropped and the actor stayed unequipped on every other client.
+     *
+     * Distinct from RunNakedNPCBugChecks, which repairs an actor missing its body
+     * piece locally and cannot recover equipment the server never heard about.
+     */
+    void RunEarlyEquipmentUpdates() noexcept;
 
     World& m_world;
     entt::dispatcher& m_dispatcher;
