@@ -19,18 +19,33 @@ CalendarService::CalendarService(World& aWorld, entt::dispatcher& aDispatcher)
 
 void CalendarService::OnUpdate(const UpdateEvent&) noexcept
 {
-    if (!m_lastTick)
-        m_lastTick = GameServer::Get()->GetTick();
+    const auto cNow = std::chrono::steady_clock::now();
 
-    auto now = GameServer::Get()->GetTick();
-
-    // client got ahead, we wait
-    if (now < m_lastTick)
+    // First tick only establishes the reference. Measuring against a
+    // default-constructed time point would advance the calendar by the machine's
+    // uptime in one step.
+    if (m_lastUpdate == std::chrono::steady_clock::time_point{})
+    {
+        m_lastUpdate = cNow;
+        m_lastResync = cNow;
         return;
+    }
 
-    auto delta = now - m_lastTick;
-    m_lastTick = now;
-    m_dateTime.Update(delta);
+    const auto cDelta = std::chrono::duration_cast<std::chrono::milliseconds>(cNow - m_lastUpdate);
+    m_lastUpdate = cNow;
+    m_dateTime.Update(static_cast<uint64_t>(cDelta.count()));
+
+    // Clients only ever get the time on connect and then run it forward on their
+    // own clock, so they diverge - a difference of hours builds up over a
+    // session, which shows as day on one client and night on another. Pull
+    // everyone back onto the server's time periodically. The message already
+    // exists, so this costs nothing protocol-wise.
+    constexpr auto cResyncInterval = std::chrono::seconds(30);
+    if (cNow - m_lastResync >= cResyncInterval)
+    {
+        m_lastResync = cNow;
+        SendTimeResync();
+    }
 }
 
 void CalendarService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept

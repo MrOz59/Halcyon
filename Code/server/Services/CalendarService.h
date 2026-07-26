@@ -41,7 +41,16 @@ private:
     void SendTimeResync() noexcept;
 
     DateTime m_dateTime;
-    uint64_t m_lastTick = 0;
+    // Own monotonic reference instead of Server::GetTick(): that value is
+    // milliseconds on the transport's clock epoch, so the first delta after
+    // startup is however long the machine has been up. Advancing the calendar by
+    // that would jump it far ahead once, and every client connecting afterwards
+    // would be handed a different time than the ones already in.
+    std::chrono::steady_clock::time_point m_lastUpdate{};
+    // Clients receive the time once on connect and then integrate it locally, so
+    // two clients that joined at different moments drift apart with no way back.
+    // Re-broadcast periodically to pull them together again.
+    std::chrono::steady_clock::time_point m_lastResync{};
     bool m_timeSetFromFirstPlayer = false;
 
     World& m_world;
