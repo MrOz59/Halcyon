@@ -280,8 +280,15 @@ void CombatService::BeginPvpBar(Actor* apRemote) noexcept
         return;
 
     const auto cHandle = apRemote->GetHandle();
-    if (!cHandle.handle.iBits)
+
+    // TrueHUD drops a bar request whose handle is zero or the engine's "null
+    // handle" (0x100000). Remote players are temporary actors, so it is worth
+    // knowing which handle they actually resolve to.
+    if (!cHandle.handle.iBits || cHandle.handle.iBits == 0x100000)
+    {
+        spdlog::warn("[truehud] remote player {:X} has no usable handle ({:X}) - no bar", apRemote->formID, cHandle.handle.iBits);
         return;
+    }
 
     const bool cIsNew = m_pvpEngagements.find(apRemote->formID) == m_pvpEngagements.end();
 
@@ -294,7 +301,8 @@ void CombatService::BeginPvpBar(Actor* apRemote) noexcept
     if (cIsNew)
     {
         pTrueHud->AddActorInfoBar(cHandle);
-        spdlog::info("[truehud] showing health bar for remote player {:X}", apRemote->formID);
+        spdlog::info("[truehud] requested bar for remote player {:X} (handle {:X}, thread {} vs truehud {})", apRemote->formID, cHandle.handle.iBits, GetCurrentThreadId(),
+                     pTrueHud->GetTrueHUDThreadId());
     }
 }
 
