@@ -109,7 +109,16 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
             return false;
 
         if (!arData.pSpell->IsHealingSpell() && !arData.pSpell->IsBuffSpell())
+        {
+            // A hostile effect on a remote player is applied authoritatively on
+            // that player's own client, so nothing else happens here. Still
+            // report the hit: it is what drives the PvP health bar, and without
+            // it magic would be the only kind of attack that never shows one.
+            if (arData.pCaster->GetExtension()->IsLocalPlayer() && World::Get().GetServerSettings().PvpEnabled)
+                World::Get().GetRunner().Trigger(HitEvent(arData.pCaster->formID, pTargetActor->formID));
+
             return false;
+        }
 
         ActorExtension* pCasterExtension = arData.pCaster->GetExtension();
         if (!pCasterExtension->IsLocalPlayer())
@@ -140,6 +149,11 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
                 // Heal and buff spells are already synced by the caster.
                 if (arData.pSpell->IsHealingSpell() || arData.pSpell->IsBuffSpell())
                     return false;
+
+                // Magic damage never reaches TakeDamage, so report the hit here
+                // as well - this is the victim's side of the same exchange, and
+                // it needs the attacker's health bar too.
+                World::Get().GetRunner().Trigger(HitEvent(arData.pCaster->formID, pTargetActor->formID));
             }
         }
 
