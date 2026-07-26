@@ -15,6 +15,10 @@
 #include <Forms/TESObjectWEAP.h>
 #include <Forms/TESAmmo.h>
 #include <Games/ActorExtension.h>
+#include <Games/References.h>
+#include <Games/Skyrim/Interface/TrueHUDAPI.h>
+
+#include <algorithm>
 
 CombatService::CombatService(World& aWorld, TransportService& aTransport, entt::dispatcher& aDispatcher)
     : m_world(aWorld)
@@ -27,9 +31,10 @@ CombatService::CombatService(World& aWorld, TransportService& aTransport, entt::
     m_projectileLaunchConnection = aDispatcher.sink<NotifyProjectileLaunch>().connect<&CombatService::OnNotifyProjectileLaunch>(this);
 }
 
-void CombatService::OnUpdate(const UpdateEvent& acEvent) const noexcept
+void CombatService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
     RunTargetUpdates(static_cast<float>(acEvent.Delta));
+    RunPvpBarUpdates();
 }
 
 void CombatService::OnLocalComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
@@ -160,8 +165,27 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
     Projectile::Launch(&result, launchData);
 }
 
-void CombatService::OnHitEvent(const HitEvent& acEvent) const noexcept
+void CombatService::OnHitEvent(const HitEvent& acEvent) noexcept
 {
+    // Show a health bar for the player being fought. Only while PvP is on:
+    // with PvP off players cannot hurt each other, so a bar would be noise.
+    if (m_transport.IsConnected() && World::Get().GetServerSettings().PvpEnabled)
+    {
+        auto* pHitter = Cast<Actor>(TESForm::GetById(acEvent.HitterId));
+        auto* pHittee = Cast<Actor>(TESForm::GetById(acEvent.HitteeId));
+
+        if (pHitter && pHittee)
+        {
+            // Only pairs involving us: the local HUD can only show the bar of
+            // the other side of our own fight. HookDamageActor runs on both
+            // clients, so each side ends up showing the other's bar.
+            if (pHitter->GetExtension()->IsLocalPlayer() && pHittee->GetExtension()->IsRemotePlayer())
+                BeginPvpBar(pHittee);
+            else if (pHitter->GetExtension()->IsRemotePlayer() && pHittee->GetExtension()->IsLocalPlayer())
+                BeginPvpBar(pHitter);
+        }
+    }
+
 #if 0
     if (!m_transport.IsConnected())
         return;
@@ -247,4 +271,98 @@ void CombatService::RunTargetUpdates(const float acDelta) const noexcept
     for (const auto entity : toRemove)
         m_world.remove<CombatComponent>(entity);
 #endif
+}
+
+void CombatService::BeginPvpBar(Actor* apRemote) noexcept
+{
+    auto* pTrueHud = TRUEHUD_API::RequestTrueHUDInterface();
+    if (!pTrueHud)
+        return;
+
+    const auto cHandle = apRemote->GetHandle();
+    if (!cHandle.handle.iBits)
+        return;
+
+    const bool cIsNew = m_pvpEngagements.find(apRemote->formID) == m_pvpEngagements.end();
+
+    auto& engagement = m_pvpEngagements[apRemote->formID];
+    engagement.lastDamage = std::chrono::steady_clock::now();
+    engagement.remoteHandle = cHandle;
+
+    // Only on the first hit of a fight: TrueHUD keeps its own widget list, so
+    // asking again every hit would be pointless work at 20 hits a second.
+    if (cIsNew)
+    {
+        pTrueHud->AddActorInfoBar(cHandle);
+        spdlog::info("[truehud] showing health bar for remote player {:X}", apRemote->formID);
+    }
+}
+
+void CombatService::RunPvpBarUpdates() noexcept
+{
+    if (m_pvpEngagements.empty())
+        return;
+
+    auto* pTrueHud = TRUEHUD_API::RequestTrueHUDInterface();
+    if (!pTrueHud)
+    {
+        m_pvpEngagements.clear();
+        return;
+    }
+
+    // No damage traded for this long ends the fight.
+    constexpr auto cPvpTimeout = 60s;
+
+    auto* pLocalPlayer = PlayerCharacter::Get();
+    if (!pLocalPlayer)
+        return;
+
+    const auto cNow = std::chrono::steady_clock::now();
+    const bool cLocalSheathed = !pLocalPlayer->actorState.IsWeaponDrawn();
+
+    // Map's iterators expose the value as const, so decide first and apply the
+    // changes afterwards through operator[] and erase.
+    Vector<uint32_t> ended;
+    Vector<uint32_t> sawWeapons;
+
+    for (const auto& [remoteFormId, engagement] : m_pvpEngagements)
+    {
+        auto* pRemote = Cast<Actor>(TESForm::GetById(remoteFormId));
+
+        // Gone, no longer a remote player, or dead.
+        bool isOver = !pRemote || !pRemote->GetExtension()->IsRemotePlayer();
+
+        if (!isOver)
+            isOver = pRemote->IsDead() || pLocalPlayer->IsDead();
+
+        if (!isOver)
+            isOver = cNow - engagement.lastDamage >= cPvpTimeout;
+
+        const bool cRemoteDrawn = pRemote && pRemote->actorState.IsWeaponDrawn();
+
+        // Sheathing only counts once weapons have actually been seen out, so an
+        // unarmed or spell fight is not ended on its first frame.
+        if (!isOver && engagement.sawWeaponsDrawn)
+            isOver = cLocalSheathed && !cRemoteDrawn;
+
+        if (!isOver)
+        {
+            // Recorded only for a running fight: operator[] would otherwise
+            // resurrect an entry that is about to be erased.
+            if ((!cLocalSheathed || cRemoteDrawn) && !engagement.sawWeaponsDrawn)
+                sawWeapons.push_back(remoteFormId);
+            continue;
+        }
+
+        // Delayed matches what TrueHUD does for dead targets: the bar lingers
+        // briefly instead of vanishing mid-frame.
+        pTrueHud->RemoveActorInfoBar(engagement.remoteHandle, TRUEHUD_API::WidgetRemovalMode::Delayed);
+        ended.push_back(remoteFormId);
+    }
+
+    for (const uint32_t cRemoteFormId : sawWeapons)
+        m_pvpEngagements[cRemoteFormId].sawWeaponsDrawn = true;
+
+    for (const uint32_t cRemoteFormId : ended)
+        m_pvpEngagements.erase(cRemoteFormId);
 }
