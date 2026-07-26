@@ -56,6 +56,9 @@ private:
     struct PvpEngagement
     {
         std::chrono::steady_clock::time_point lastDamage;
+        // Throttles re-asserting the bar: TrueHUD queues a HUD task on every
+        // request, so this must not run once per frame.
+        std::chrono::steady_clock::time_point lastReassert;
         // Kept so the bar can still be removed after the actor is gone.
         BSPointerHandle<TESObjectREFR> remoteHandle{};
         // "Both sheathed" may only end a fight that was fought with weapons out,

@@ -307,13 +307,16 @@ void CombatService::BeginPvpBar(Actor* apRemote) noexcept
     // such condition.
     pTrueHud->SetTarget(TRUEHUD_API::kSkyrimTogetherPluginHandle, cHandle);
 
-    // Only on the first hit of a fight: TrueHUD keeps its own widget list, so
-    // asking again every hit would be pointless work at 20 hits a second.
+    // Asked on every hit, not just the first. TrueHUD drops a widget whose actor
+    // was not ready when it was created ("isReadyToRemove"), which is what made
+    // the bar miss the opening hit on the attacker's side while showing up
+    // immediately for the side taking the damage. Re-requesting is cheap and
+    // safe: TrueHUDMenu::AddActorInfoBar checks HasActorInfoBar first, so an
+    // existing bar is left alone rather than duplicated.
+    pTrueHud->AddActorInfoBar(cHandle);
+
     if (cIsNew)
-    {
-        pTrueHud->AddActorInfoBar(cHandle);
         spdlog::info("[truehud] bar + target set for remote player {:X} (handle {:X})", apRemote->formID, cHandle.handle.iBits);
-    }
 }
 
 void CombatService::RunPvpBarUpdates() noexcept
@@ -342,6 +345,7 @@ void CombatService::RunPvpBarUpdates() noexcept
     // changes afterwards through operator[] and erase.
     Vector<uint32_t> ended;
     Vector<uint32_t> sawWeapons;
+    Vector<uint32_t> reasserted;
 
     for (const auto& [remoteFormId, engagement] : m_pvpEngagements)
     {
@@ -365,6 +369,23 @@ void CombatService::RunPvpBarUpdates() noexcept
 
         if (!isOver)
         {
+            // A widget whose actor was not ready yet is dropped by TrueHUD, which
+            // is what made the bar miss the opening hit on the attacker's side.
+            // Re-assert it for a short while after each hit instead of only once,
+            // so a single hit still ends up with a bar.
+            //
+            // Bounded on purpose: HUDHandler::AddActorInfoBar always queues a HUD
+            // task, even when the bar already exists, so doing this every frame
+            // for a whole fight would just pile work up.
+            constexpr auto cReassertWindow = 2s;
+            constexpr auto cReassertInterval = 250ms;
+            if (cNow - engagement.lastDamage < cReassertWindow && cNow - engagement.lastReassert >= cReassertInterval)
+            {
+                pTrueHud->SetTarget(TRUEHUD_API::kSkyrimTogetherPluginHandle, engagement.remoteHandle);
+                pTrueHud->AddActorInfoBar(engagement.remoteHandle);
+                reasserted.push_back(remoteFormId);
+            }
+
             // Recorded only for a running fight: operator[] would otherwise
             // resurrect an entry that is about to be erased.
             if ((!cLocalSheathed || cRemoteDrawn) && !engagement.sawWeaponsDrawn)
@@ -380,6 +401,9 @@ void CombatService::RunPvpBarUpdates() noexcept
 
     for (const uint32_t cRemoteFormId : sawWeapons)
         m_pvpEngagements[cRemoteFormId].sawWeaponsDrawn = true;
+
+    for (const uint32_t cRemoteFormId : reasserted)
+        m_pvpEngagements[cRemoteFormId].lastReassert = cNow;
 
     for (const uint32_t cRemoteFormId : ended)
         m_pvpEngagements.erase(cRemoteFormId);
