@@ -41,6 +41,9 @@
 #include <Messages/NotifyRelinquishControl.h>
 
 #include <Setting.h>
+
+#include <algorithm>
+
 namespace
 {
 Console::Setting bEnableXpSync{"Gameplay:bEnableXpSync", "Syncs combat XP within the party", true};
@@ -49,8 +52,8 @@ Console::Setting bEnableXpSync{"Gameplay:bEnableXpSync", "Syncs combat XP within
 CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
     , m_updateConnection(aDispatcher.sink<UpdateEvent>().connect<&CharacterService::OnUpdate>(this))
-    , m_interiorCellChangeEventConnection(aDispatcher.sink<CharacterInteriorCellChangeEvent>().connect<&CharacterService::OnCharacterInteriorCellChange>(this))
     , m_exteriorCellChangeEventConnection(aDispatcher.sink<CharacterExteriorCellChangeEvent>().connect<&CharacterService::OnCharacterExteriorCellChange>(this))
+    , m_interiorCellChangeEventConnection(aDispatcher.sink<CharacterInteriorCellChangeEvent>().connect<&CharacterService::OnCharacterInteriorCellChange>(this))
     , m_characterAssignRequestConnection(aDispatcher.sink<PacketEvent<AssignCharacterRequest>>().connect<&CharacterService::OnAssignCharacterRequest>(this))
     , m_transferOwnershipConnection(aDispatcher.sink<PacketEvent<RequestOwnershipTransfer>>().connect<&CharacterService::OnOwnershipTransferRequest>(this))
     , m_ownershipTransferEventConnection(aDispatcher.sink<OwnershipTransferEvent>().connect<&CharacterService::OnOwnershipTransferEvent>(this))
@@ -134,6 +137,7 @@ void CharacterService::OnCharacterExteriorCellChange(const CharacterExteriorCell
 {
     CharacterSpawnRequest spawnMessage;
     Serialize(m_world, acEvent.Entity, &spawnMessage);
+    const bool isDragon = m_world.get<CharacterComponent>(acEvent.Entity).IsDragon();
 
     NotifyRemoveCharacter removeMessage;
     removeMessage.ServerId = World::ToInteger(acEvent.Entity);
@@ -143,11 +147,16 @@ void CharacterService::OnCharacterExteriorCellChange(const CharacterExteriorCell
         if (acEvent.Owner == pPlayer)
             continue;
 
-        if (pPlayer->GetCellComponent().WorldSpaceId != acEvent.WorldSpaceId || pPlayer->GetCellComponent().WorldSpaceId == acEvent.WorldSpaceId && !GridCellCoords::IsCellInGridCell(acEvent.CurrentCoords, pPlayer->GetCellComponent().CenterCoords, false))
+        const auto& playerCell = pPlayer->GetCellComponent();
+        const bool isInRange =
+            playerCell.WorldSpaceId == acEvent.WorldSpaceId &&
+            GridCellCoords::IsCellInGridCell(acEvent.CurrentCoords, playerCell.CenterCoords, isDragon);
+
+        if (!isInRange)
         {
             pPlayer->Send(removeMessage);
         }
-        else if (pPlayer->GetCellComponent().WorldSpaceId == acEvent.WorldSpaceId && GridCellCoords::IsCellInGridCell(acEvent.CurrentCoords, pPlayer->GetCellComponent().CenterCoords, false))
+        else
         {
             pPlayer->Send(spawnMessage);
         }
@@ -336,6 +345,13 @@ void CharacterService::OnOwnershipTransferEvent(const OwnershipTransferEvent& ac
             continue;
 
         ownerComponent.SetOwner(pPlayer);
+        if (auto* pMovementComponent = m_world.try_get<MovementComponent>(acEvent.Entity))
+        {
+            // Synchronized client clocks can differ by their half-RTT
+            // estimates. Give a new owner a fresh sequencing baseline so a
+            // previous high-latency owner cannot temporarily pin movement.
+            pMovementComponent->Tick = 0;
+        }
 
         pPlayer->Send(response);
 
@@ -351,6 +367,12 @@ void CharacterService::OnCharacterRemoveEvent(const CharacterRemoveEvent& acEven
 {
     const auto view = m_world.view<OwnerComponent>();
     const auto it = view.find(static_cast<entt::entity>(acEvent.ServerId));
+    if (it == view.end())
+    {
+        spdlog::debug("Ignoring removal of unknown character {:X}", acEvent.ServerId);
+        return;
+    }
+
     const auto& characterOwnerComponent = view.get<OwnerComponent>(*it);
 
     GameServer::Get()->GetWorld().GetScriptService().HandleCharacterDestoy(*it);
@@ -393,6 +415,14 @@ void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReference
 
     auto& message = acMessage.Packet;
 
+    // Client ticks come from SynchronizedClock, which is anchored to the value
+    // Server::GetTick() broadcasts (milliseconds on the server's steady_clock
+    // epoch). Both sides must keep using that same base for this bound to mean
+    // anything; comparing against a wall-clock value would reject every packet.
+    const auto serverTick = GameServer::Get()->GetTick();
+    constexpr uint64_t kMaxClientClockLeadMs = 5000;
+    const auto maxAcceptedTick = serverTick + kMaxClientClockLeadMs;
+
     for (auto& entry : message.Updates)
     {
         const auto entity = static_cast<entt::entity>(entry.first);
@@ -400,7 +430,9 @@ void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReference
         auto itor = view.find(entity);
         if (itor == std::end(view))
         {
-            spdlog::debug("{:x} requested move of {:x} but does not exist", acMessage.pPlayer->GetConnectionId(), World::ToInteger(*itor));
+            // This can legitimately race with ownership transfer/removal. Do
+            // not dereference the end iterator while reporting it.
+            spdlog::debug("{:x} requested move of {:x} but does not own it or it no longer exists", acMessage.pPlayer->GetConnectionId(), entry.first);
             continue;
         }
 
@@ -408,36 +440,49 @@ void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReference
         auto& cellIdComponent = view.get<CellIdComponent>(*itor);
         auto& animationComponent = view.get<AnimationComponent>(*itor);
 
-        movementComponent.Tick = message.Tick;
-
-        const auto movementCopy = movementComponent;
-
         auto& update = entry.second;
         auto& movement = update.UpdatedMovement;
 
-        movementComponent.Position = movement.Position;
-        movementComponent.Rotation = glm::vec3(movement.Rotation.x, 0.f, movement.Rotation.y);
-        movementComponent.Variables = movement.Variables;
-        movementComponent.Direction = movement.Direction;
+        // Movement packets use the freshness channel and can be reordered.
+        // A forged far-future tick must not pin the entity and make every
+        // subsequent legitimate update look stale.
+        const bool isFreshMovement = message.Tick > movementComponent.Tick && message.Tick <= maxAcceptedTick;
 
-        cellIdComponent.Cell = movement.CellId;
-        cellIdComponent.WorldSpaceId = movement.WorldSpaceId;
-        cellIdComponent.CenterCoords = GridCellCoords::CalculateGridCellCoords(movement.Position.x, movement.Position.y);
+        if (isFreshMovement)
+        {
+            movementComponent.Tick = message.Tick;
+            movementComponent.Position = movement.Position;
+            movementComponent.Rotation = glm::vec3(movement.Rotation.x, 0.f, movement.Rotation.y);
+            movementComponent.Variables = movement.Variables;
+            movementComponent.Direction = movement.Direction;
 
+            cellIdComponent.Cell = movement.CellId;
+            cellIdComponent.WorldSpaceId = movement.WorldSpaceId;
+            cellIdComponent.CenterCoords = GridCellCoords::CalculateGridCellCoords(movement.Position.x, movement.Position.y);
+        }
+
+        Vector<ActionEvent> acceptedActions;
         for (auto& action : update.ActionEvents)
         {
+            if (action.Tick > maxAcceptedTick)
+                continue;
+
             auto [canceled, reason] = GameServer::Get()->GetWorld().GetScriptService().HandleCharacterMove(entity);
             if (canceled)
                 continue;
 
             animationComponent.CurrentAction = action;
-
             animationComponent.Actions.push_back(animationComponent.CurrentAction);
+            acceptedActions.push_back(action);
         }
 
-        animationComponent.ActionsReplayCache.AppendAll(update.ActionEvents);
+        animationComponent.ActionsReplayCache.AppendAll(acceptedActions);
 
-        movementComponent.Sent = false;
+        // Reliable action packets can arrive after a newer unreliable movement
+        // snapshot. Relay the action with the newest authoritative movement
+        // instead of rolling the entity back.
+        if (isFreshMovement || !acceptedActions.empty())
+            movementComponent.Sent = false;
     }
 }
 
@@ -675,6 +720,8 @@ void CharacterService::TransferOwnership(Player* apPlayer, const uint32_t acServ
 
     characterOwnerComponent.SetOwner(apPlayer);
     characterOwnerComponent.InvalidOwners.clear();
+    if (auto* pMovementComponent = m_world.try_get<MovementComponent>(*it))
+        pMovementComponent->Tick = 0;
 
     BroadcastActorData(apPlayer, *it, acActorData);
 
@@ -793,15 +840,6 @@ void CharacterService::ProcessFactionsChanges() const noexcept
 
 void CharacterService::ProcessMovementChanges() const noexcept
 {
-    static std::chrono::steady_clock::time_point lastSendTimePoint;
-    constexpr auto cDelayBetweenSnapshots = 1000ms / 50;
-
-    const auto now = std::chrono::steady_clock::now();
-    if (now - lastSendTimePoint < cDelayBetweenSnapshots)
-        return;
-
-    lastSendTimePoint = now;
-
     const auto characterView = m_world.view<CharacterComponent, CellIdComponent, MovementComponent, AnimationComponent, OwnerComponent>();
 
     TiltedPhoques::Map<Player*, ServerReferencesMoveRequest> messages;
@@ -860,6 +898,13 @@ void CharacterService::ProcessMovementChanges() const noexcept
     for (auto& [pPlayer, message] : messages)
     {
         if (!message.Updates.empty())
-            pPlayer->Send(message);
+        {
+            const bool containsActions = std::any_of(message.Updates.begin(), message.Updates.end(), [](const auto& aEntry) { return !aEntry.second.ActionEvents.empty(); });
+
+            // Positional snapshots are superseded by the next update, so
+            // reliability only creates head-of-line blocking under packet
+            // loss. Animation actions are state transitions and must arrive.
+            pPlayer->Send(message, containsActions ? TiltedPhoques::kReliable : TiltedPhoques::kUnreliable);
+        }
     }
 }

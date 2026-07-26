@@ -54,7 +54,7 @@ struct GameServer final : Server
     void UpdateSettings();
 
     // Packet dispatching
-    void Send(ConnectionId_t aConnectionId, const ServerMessage& acServerMessage) const;
+    void Send(ConnectionId_t aConnectionId, const ServerMessage& acServerMessage, TiltedPhoques::EPacketFlags aPacketFlags = TiltedPhoques::kReliable) const;
     void Send(ConnectionId_t aConnectionId, const ServerAdminMessage& acServerMessage) const;
     void SendToLoaded(const ServerMessage& acServerMessage) const;
     void SendToPlayers(const ServerMessage& acServerMessage, const Player* apExcludeSender = nullptr) const;
@@ -108,8 +108,8 @@ private:
     String SanitizeUsername(const String& acUsername) const noexcept;
 
 private:
-    std::chrono::high_resolution_clock::time_point m_startTime;
-    std::chrono::high_resolution_clock::time_point m_lastFrameTime;
+    std::chrono::steady_clock::time_point m_startTime;
+    std::chrono::steady_clock::time_point m_lastFrameTime;
     std::function<void(UniquePtr<ClientMessage>&, ConnectionId_t)> m_messageHandlers[kClientOpcodeMax];
     std::function<void(UniquePtr<ClientAdminMessage>&, ConnectionId_t)> m_adminMessageHandlers[kClientAdminOpcodeMax];
 

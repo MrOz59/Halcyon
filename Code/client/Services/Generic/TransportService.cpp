@@ -93,7 +93,7 @@ TransportService::TransportService(World& aWorld, entt::dispatcher& aDispatcher)
     };
 }
 
-bool TransportService::Send(const ClientMessage& acMessage) const noexcept
+bool TransportService::Send(const ClientMessage& acMessage, const TiltedPhoques::EPacketFlags aPacketFlags) const noexcept
 {
     static thread_local ScratchAllocator s_allocator(1 << 18);
 
@@ -113,7 +113,7 @@ bool TransportService::Send(const ClientMessage& acMessage) const noexcept
         acMessage.Serialize(writer);
         TiltedPhoques::PacketView packet(reinterpret_cast<char*>(buffer.GetWriteData()), writer.Size());
 
-        Client::Send(&packet);
+        Client::Send(&packet, aPacketFlags);
 
         return true;
     }

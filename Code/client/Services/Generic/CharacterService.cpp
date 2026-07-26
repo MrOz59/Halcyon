@@ -67,6 +67,8 @@
 #include <World.h>
 #include <Games/TES.h>
 
+#include <algorithm>
+
 CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
     : m_world(aWorld)
     , m_dispatcher(aDispatcher)
@@ -1464,7 +1466,7 @@ ActorData CharacterService::BuildActorData(Actor* apActor) const noexcept
 void CharacterService::RunLocalUpdates() const noexcept
 {
     static std::chrono::steady_clock::time_point lastSendTimePoint;
-    constexpr auto cDelayBetweenSnapshots = 100ms;
+    constexpr auto cDelayBetweenSnapshots = 50ms;
 
     const auto now = std::chrono::steady_clock::now();
     if (now - lastSendTimePoint < cDelayBetweenSnapshots)
@@ -1486,13 +1488,19 @@ void CharacterService::RunLocalUpdates() const noexcept
         AnimationSystem::Serialize(m_world, message, localComponent, animationComponent, formIdComponent);
     }
 
-    m_transport.Send(message);
+    const bool containsActions = std::any_of(message.Updates.begin(), message.Updates.end(), [](const auto& aEntry) { return !aEntry.second.ActionEvents.empty(); });
+
+    m_transport.Send(message, containsActions ? TiltedPhoques::kReliable : TiltedPhoques::kUnreliable);
 }
 
 void CharacterService::RunRemoteUpdates() noexcept
 {
-    // Delay by 300ms to let the interpolation system accumulate interpolation points
-    const auto tick = m_transport.GetClock().GetCurrentTick() - 300;
+    // Delay by 300ms to let the interpolation system accumulate interpolation points.
+    // The clock reads 0 until the first server time sync arrives, so clamp instead of
+    // letting the unsigned subtraction wrap into a huge tick.
+    constexpr uint64_t cInterpolationDelay = 300;
+    const auto currentTick = m_transport.GetClock().GetCurrentTick();
+    const auto tick = currentTick > cInterpolationDelay ? currentTick - cInterpolationDelay : 0;
 
     // Interpolation has to keep running even if the actor is not in view, otherwise we will never know if we need to spawn it
     auto interpolatedEntities = m_world.view<RemoteComponent, InterpolationComponent>();

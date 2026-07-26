@@ -48,12 +48,16 @@ Console::Setting bEnableModCheck{"ModPolicy:bEnableModCheck", "Bypass the checki
 Console::Setting bAllowSKSE{"ModPolicy:bAllowSKSE", "Allow clients with SKSE active to join", true, Console::SettingsFlags::kLocked};
 Console::Setting bAllowMO2{"ModPolicy:bAllowMO2", "Allow clients running Mod Organizer 2 to join", true, Console::SettingsFlags::kLocked};
 
+static uint16_t GetUserTickRate();
+
 // -- Commands --
 Console::Command<> TogglePremium(
     "TogglePremium", "Toggle Premium Tickrate on/off",
     [](Console::ArgStack&)
     {
         bPremiumTickrate = !bPremiumTickrate;
+        GameServer::Get()->SetTickRate(GetUserTickRate());
+        GameServer::Get()->UpdateInfo();
         spdlog::get("ConOut")->info("Premium Tickrate has been {}.", bPremiumTickrate == true ? "enabled" : "disabled");
     });
 
@@ -149,8 +153,8 @@ ServerSettings GetSettings()
 }
 
 GameServer::GameServer(Console::ConsoleRegistry& aConsole) noexcept
-    : m_lastFrameTime(std::chrono::high_resolution_clock::now())
-    , m_startTime(std::chrono::high_resolution_clock::now())
+    : m_startTime(std::chrono::steady_clock::now())
+    , m_lastFrameTime(std::chrono::steady_clock::now())
     , m_commands(aConsole)
     , m_requestStop(false)
 {
@@ -546,7 +550,7 @@ void GameServer::UpdateTimeScale()
 
 void GameServer::OnUpdate()
 {
-    const auto cNow = std::chrono::high_resolution_clock::now();
+    const auto cNow = std::chrono::steady_clock::now();
     const auto cDelta = cNow - m_lastFrameTime;
     m_lastFrameTime = cNow;
 
@@ -651,7 +655,7 @@ void GameServer::OnDisconnection(const ConnectionId_t aConnectionId, EDisconnect
     UpdateTitle();
 }
 
-void GameServer::Send(const ConnectionId_t aConnectionId, const ServerMessage& acServerMessage) const
+void GameServer::Send(const ConnectionId_t aConnectionId, const ServerMessage& acServerMessage, const TiltedPhoques::EPacketFlags aPacketFlags) const
 {
     static thread_local TiltedPhoques::ScratchAllocator s_allocator{1 << 18};
 
@@ -662,7 +666,7 @@ void GameServer::Send(const ConnectionId_t aConnectionId, const ServerMessage& a
     acServerMessage.Serialize(writer);
 
     TiltedPhoques::PacketView packet(reinterpret_cast<char*>(buffer.GetWriteData()), static_cast<uint32_t>(writer.Size()));
-    Server::Send(aConnectionId, &packet);
+    Server::Send(aConnectionId, &packet, aPacketFlags);
 
     s_allocator.Reset();
 }
@@ -1024,7 +1028,7 @@ void GameServer::UpdateSettings()
 
 GameServer::Uptime GameServer::GetUptime() const noexcept
 {
-    auto duration = std::chrono::high_resolution_clock::now() - m_startTime;
+    auto duration = std::chrono::steady_clock::now() - m_startTime;
     auto weeks = std::chrono::duration_cast<std::chrono::weeks>(duration);
     duration -= weeks;
     auto days = std::chrono::duration_cast<std::chrono::days>(duration);

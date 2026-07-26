@@ -10,6 +10,7 @@
 #include <Messages/EnterExteriorCellRequest.h>
 #include <Messages/EnterInteriorCellRequest.h>
 #include <Messages/CharacterSpawnRequest.h>
+#include <Messages/NotifyRemoveCharacter.h>
 #include <Messages/PlayerRespawnRequest.h>
 #include <Messages/NotifyInventoryChanges.h>
 #include <Messages/NotifyPlayerRespawn.h>
@@ -22,13 +23,48 @@
 namespace
 {
 Console::Setting fGoldLossFactor{"Gameplay:fGoldLossFactor", "Factor of the amount of gold lost on death", 0.0f};
+
+void SendVisibilityChanges(World& aWorld, Player* apPlayer, const CellIdComponent& acOldCell, const CellIdComponent& acNewCell) noexcept
+{
+    auto characterView = aWorld.view<CellIdComponent, CharacterComponent, OwnerComponent>();
+
+    for (auto character : characterView)
+    {
+        const auto& ownerComponent = characterView.get<OwnerComponent>(character);
+        if (ownerComponent.GetOwner() == apPlayer)
+            continue;
+
+        const auto& characterCell = characterView.get<CellIdComponent>(character);
+        const auto& characterComponent = characterView.get<CharacterComponent>(character);
+        const bool isDragon = characterComponent.IsDragon();
+
+        const bool wasVisible = static_cast<bool>(acOldCell) && characterCell.IsInRange(acOldCell, isDragon);
+        const bool isVisible = static_cast<bool>(acNewCell) && characterCell.IsInRange(acNewCell, isDragon);
+
+        if (wasVisible == isVisible)
+            continue;
+
+        if (isVisible)
+        {
+            CharacterSpawnRequest spawnMessage;
+            CharacterService::Serialize(aWorld, character, &spawnMessage);
+            apPlayer->Send(spawnMessage);
+        }
+        else
+        {
+            NotifyRemoveCharacter removeMessage;
+            removeMessage.ServerId = World::ToInteger(character);
+            apPlayer->Send(removeMessage);
+        }
+    }
 }
+} // namespace
 
 PlayerService::PlayerService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
-    , m_interiorCellEnterConnection(aDispatcher.sink<PacketEvent<EnterInteriorCellRequest>>().connect<&PlayerService::HandleInteriorCellEnter>(this))
     , m_gridCellShiftConnection(aDispatcher.sink<PacketEvent<ShiftGridCellRequest>>().connect<&PlayerService::HandleGridCellShift>(this))
     , m_exteriorCellEnterConnection(aDispatcher.sink<PacketEvent<EnterExteriorCellRequest>>().connect<&PlayerService::HandleExteriorCellEnter>(this))
+    , m_interiorCellEnterConnection(aDispatcher.sink<PacketEvent<EnterInteriorCellRequest>>().connect<&PlayerService::HandleInteriorCellEnter>(this))
     , m_playerRespawnConnection(aDispatcher.sink<PacketEvent<PlayerRespawnRequest>>().connect<&PlayerService::OnPlayerRespawnRequest>(this))
     , m_playerLevelConnection(aDispatcher.sink<PacketEvent<PlayerLevelRequest>>().connect<&PlayerService::OnPlayerLevelRequest>(this))
 {
@@ -52,34 +88,31 @@ void PlayerService::HandleGridCellShift(const PacketEvent<ShiftGridCellRequest>&
 
     auto& message = acMessage.Packet;
 
-    const GameId oldCell = pPlayer->GetCellComponent().Cell;
+    const CellIdComponent oldCell = pPlayer->GetCellComponent();
+    const CellIdComponent newCell{message.PlayerCell, message.WorldSpaceId, message.CenterCoords};
+    pPlayer->SetCellComponent(newCell);
 
-    CellIdComponent cell = CellIdComponent{message.PlayerCell, message.WorldSpaceId, message.CenterCoords};
-    pPlayer->SetCellComponent(cell);
-
-    m_world.GetDispatcher().trigger(PlayerLeaveCellEvent(oldCell));
-
-    auto characterView = m_world.view<CellIdComponent, CharacterComponent, OwnerComponent>();
-    for (auto character : characterView)
+    if (const auto playerCharacter = pPlayer->GetCharacter())
     {
-        const auto& ownedComponent = characterView.get<OwnerComponent>(character);
-        const auto& characterCellComponent = characterView.get<CellIdComponent>(character);
-
-        if (ownedComponent.GetOwner() == pPlayer)
-            continue;
-
-        const auto cellIt = std::find_if(std::begin(message.Cells), std::end(message.Cells), [Cells = message.Cells, CharacterCell = characterCellComponent.Cell](auto playerCell) { return playerCell == CharacterCell; });
-
-        if (cellIt == std::end(message.Cells))
+        if (auto* pCharacterCell = m_world.try_get<CellIdComponent>(*playerCharacter))
         {
-            continue;
+            pCharacterCell->Cell = message.PlayerCell;
+            pCharacterCell->WorldSpaceId = message.WorldSpaceId;
+
+            // Movement snapshots hold the actor's exact grid coordinates.
+            // Only use the loaded-grid center as a fallback during the first
+            // shift or a world-space transition.
+            if (!oldCell || oldCell.WorldSpaceId != message.WorldSpaceId)
+                pCharacterCell->CenterCoords = message.CenterCoords;
         }
-
-        CharacterSpawnRequest spawnMessage;
-        CharacterService::Serialize(m_world, character, &spawnMessage);
-
-        pPlayer->Send(spawnMessage);
     }
+
+    if (oldCell)
+        m_world.GetDispatcher().trigger(PlayerLeaveCellEvent(oldCell.Cell));
+
+    // Compute both sides of the interest transition. The previous code only
+    // spawned the newly loaded fringe and never removed entities that left it.
+    SendVisibilityChanges(m_world, pPlayer, oldCell, newCell);
 }
 
 void PlayerService::HandleExteriorCellEnter(const PacketEvent<EnterExteriorCellRequest>& acMessage) const noexcept
@@ -90,15 +123,29 @@ void PlayerService::HandleExteriorCellEnter(const PacketEvent<EnterExteriorCellR
     if (pPlayer->GetCharacter())
     {
         auto entity = *pPlayer->GetCharacter();
+        const CellIdComponent oldCell = pPlayer->GetCellComponent();
 
-        auto cell = CellIdComponent{message.CellId, message.WorldSpaceId, message.CurrentCoords};
+        // CurrentCoords is the actor's current cell, not necessarily the
+        // center of the 5x5 grid loaded by this client. Preserve the center
+        // received through ShiftGridCellRequest whenever it is available.
+        GridCellCoords loadedGridCenter = message.CurrentCoords;
+        if (oldCell && oldCell.WorldSpaceId == message.WorldSpaceId)
+            loadedGridCenter = oldCell.CenterCoords;
 
-        if (pPlayer->GetCellComponent())
+        const CellIdComponent newCell{message.CellId, message.WorldSpaceId, loadedGridCenter};
+        pPlayer->SetCellComponent(newCell);
+
+        if (auto* pCharacterCell = m_world.try_get<CellIdComponent>(entity))
         {
-            m_world.GetDispatcher().trigger(CharacterExteriorCellChangeEvent{pPlayer, entity, message.WorldSpaceId, message.CurrentCoords});
+            pCharacterCell->Cell = message.CellId;
+            pCharacterCell->WorldSpaceId = message.WorldSpaceId;
+            pCharacterCell->CenterCoords = message.CurrentCoords;
         }
 
-        pPlayer->SetCellComponent(cell);
+        SendVisibilityChanges(m_world, pPlayer, oldCell, newCell);
+
+        if (oldCell)
+            m_world.GetDispatcher().trigger(CharacterExteriorCellChangeEvent{pPlayer, entity, message.WorldSpaceId, message.CurrentCoords});
 
         SendPlayerCellChanged(pPlayer);
     }
@@ -110,39 +157,26 @@ void PlayerService::HandleInteriorCellEnter(const PacketEvent<EnterInteriorCellR
 
     auto& message = acMessage.Packet;
 
-    const auto oldCell = pPlayer->GetCellComponent().Cell;
+    const CellIdComponent oldCell = pPlayer->GetCellComponent();
 
-    auto cell = CellIdComponent{message.CellId, {}, {}};
-    pPlayer->SetCellComponent(cell);
+    const CellIdComponent newCell{message.CellId, {}, {}};
+    pPlayer->SetCellComponent(newCell);
 
-    m_world.GetDispatcher().trigger(PlayerLeaveCellEvent(oldCell));
+    if (oldCell)
+        m_world.GetDispatcher().trigger(PlayerLeaveCellEvent(oldCell.Cell));
 
     if (pPlayer->GetCharacter())
     {
         auto entity = *pPlayer->GetCharacter();
 
-        if (auto pCellIdComponent = m_world.try_get<CellIdComponent>(entity); pCellIdComponent)
+        if (auto* pCellIdComponent = m_world.try_get<CellIdComponent>(entity))
         {
+            *pCellIdComponent = newCell;
             m_world.GetDispatcher().trigger(CharacterInteriorCellChangeEvent{pPlayer, entity, message.CellId});
         }
     }
 
-    auto characterView = m_world.view<CellIdComponent, CharacterComponent, OwnerComponent>();
-    for (auto character : characterView)
-    {
-        const auto& ownedComponent = characterView.get<OwnerComponent>(character);
-
-        if (ownedComponent.GetOwner() == pPlayer)
-            continue;
-
-        if (message.CellId != characterView.get<CellIdComponent>(character).Cell)
-            continue;
-
-        CharacterSpawnRequest spawnMessage;
-        CharacterService::Serialize(m_world, character, &spawnMessage);
-
-        pPlayer->Send(spawnMessage);
-    }
+    SendVisibilityChanges(m_world, pPlayer, oldCell, newCell);
 
     SendPlayerCellChanged(pPlayer);
 }

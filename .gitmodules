@@ -6,7 +6,8 @@
 	url = https://github.com/TiltedPhoques/TiltedUI
 [submodule "Libraries/TiltedConnect"]
 	path = Libraries/TiltedConnect
-	url = https://github.com/TiltedPhoques/TiltedConnect
+	url = https://github.com/MrOz59/TiltedConnect
+	branch = linux-port
 [submodule "Libraries/TiltedHooks"]
 	path = Libraries/TiltedHooks
 	url = https://github.com/TiltedPhoques/TiltedHooks

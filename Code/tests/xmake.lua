@@ -6,13 +6,18 @@ target("TPTests")
         ".", "../encoding")
     add_headerfiles("**.h")
     add_files("*.cpp")
-    add_deps("SkyrimEncoding")
+    add_deps("SkyrimEncoding", "TiltedConnect")
     add_packages(
         "tiltedcore",
         "hopscotch-map",
         "catch2",
         "mimalloc",
-        "glm")
+        "glm",
+        -- TiltedConnect is a static lib: its own package dependencies are not
+        -- inherited transitively and have to be linked by every consumer.
+        "gamenetworkingsockets",
+        "snappy",
+        "libuv")
 
     if is_plat("windows") then
         add_files(

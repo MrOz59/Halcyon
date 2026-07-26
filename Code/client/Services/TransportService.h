@@ -26,7 +26,7 @@ struct TransportService : Client
 
     TP_NOCOPYMOVE(TransportService);
 
-    bool Send(const ClientMessage& acMessage) const noexcept;
+    bool Send(const ClientMessage& acMessage, TiltedPhoques::EPacketFlags aPacketFlags = TiltedPhoques::kReliable) const noexcept;
 
     void OnConsume(const void* apData, uint32_t aSize) override;
     void OnConnected() override;
