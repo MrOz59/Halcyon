@@ -59,15 +59,26 @@ void InventoryService::RunEarlyEquipmentUpdates() noexcept
     // body piece at all, repaired locally with ResetInventory. It does not help an
     // actor whose weapon or helmet never reached the server because the equip
     // happened before the assignment response.
+    const auto cNow = std::chrono::steady_clock::now();
     Vector<entt::entity> sent;
 
     for (auto entity : view)
     {
         const auto& formIdComponent = view.get<FormIdComponent>(entity);
+        const auto& bufferComponent = view.get<EarlyEquipmentBufferComponent>(entity);
 
         const std::optional<uint32_t> cServerId = Utils::GetServerId(entity);
         if (!cServerId.has_value())
-            continue; // still waiting for the assignment
+        {
+            // Still waiting, unless it has waited too long - an actor that never
+            // gets an assignment would otherwise be retried every frame forever.
+            if (cNow >= bufferComponent.deadline)
+            {
+                spdlog::debug("Giving up on deferred equipment for actor {:X}: no server id in time", formIdComponent.Id);
+                sent.push_back(entity);
+            }
+            continue;
+        }
 
         Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
         if (!pActor)

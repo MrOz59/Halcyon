@@ -23,4 +23,8 @@
  */
 struct EarlyEquipmentBufferComponent
 {
+    // Given up on if the assignment never arrives - the actor may have been
+    // unloaded, or the request may have been refused - so a pending entry cannot
+    // linger and be retried on every frame for the rest of the session.
+    std::chrono::steady_clock::time_point deadline{std::chrono::steady_clock::now() + std::chrono::seconds(30)};
 };
