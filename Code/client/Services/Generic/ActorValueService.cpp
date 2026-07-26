@@ -333,9 +333,17 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
     for (const auto& [key, value] : acMessage.Values)
     {
         // Syncing dragon souls triggers "Dragon soul collected" event
-        if (key == ActorValueInfo::kDragonSouls || key == ActorValueInfo::kHealth)
+        if (key == ActorValueInfo::kDragonSouls)
             continue;
 
+        // Health used to be skipped here as well, which left a respawn invisible
+        // to everyone else: RespawnPlayer restores health directly through
+        // ForceActorValue, so it never goes through the damage hook and produces
+        // no delta broadcast. The owner stood there at full health while every
+        // other client - and any health bar reading the actor - still showed the
+        // value from just before the death. Absolute updates are the only thing
+        // that can recover from that, and they are the owner's own reading, so
+        // applying them does not fight the delta path.
         spdlog::debug("Actor value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
 
         if (key == ActorValueInfo::kStamina || key == ActorValueInfo::kMagicka || key == ActorValueInfo::kHealth)
