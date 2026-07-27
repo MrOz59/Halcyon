@@ -126,6 +126,36 @@ The prototype requires:
 
 The RFC is validated when the prototype scenario succeeds reliably with two clients across server restart.
 
+## Implementation Status
+
+**Status: Prototype — state model only. The acceptance criteria above are NOT met.**
+
+Implemented in `Code/components/contexts/`:
+
+- `Context.h` — `ContextId`, `ContextKind`, `Context`, `ScopedLifeState`, and the
+  `PlayerId` / `EntityId` identity types;
+- `ContextRegistry.h` — Context creation with server-issued ids, full membership,
+  the scoped Life State store, stale-revision rejection, and the replication rule
+  from this document expressed as `IsVisibleTo` / `GetVisibleLifeStates`.
+
+Covered by unit tests in `Code/tests/contexts.cpp`, including the divergence
+described in steps 1-8 of the prototype scenario.
+
+Not implemented:
+
+- **Persistence.** Nothing in the section above is stored; the registry is
+  in-memory only, so steps 9-10 of the scenario are unverified.
+- **Protocol.** No capability, membership snapshot, scoped Life State message,
+  or resync request exists. The open question about Context ID placement remains
+  unanswered and is deliberately not pre-empted by the current types.
+- **Client and world integration.** The registry is not wired into `Code/server`;
+  no gameplay path reads or writes it, and no Actor death reaches it.
+- **Every risk listed below.** All concern live Skyrim behavior and remain
+  entirely untested.
+
+The registry is a standalone module: validating its state transitions is a
+precondition for the RFC, not evidence that the RFC succeeds.
+
 ## Open Questions
 
 - Should the first Context ID be attached to Entity state or message envelope?
