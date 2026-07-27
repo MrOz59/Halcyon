@@ -222,6 +222,31 @@ int main(int argc, char** argv)
 
     // Keep stack free.
     const auto cpRunner{std::make_unique<DediRunner>(argc, argv)};
+
+    // LogInstance is constructed before the runner reads STServer.ini, so the
+    // logger was configured from sLogLevel's compiled-in default. Reapply it
+    // now that the file has been loaded, otherwise the configured level is
+    // silently ignored.
+    if (const auto defaultLogger = spdlog::default_logger())
+    {
+        const std::string configuredName = sLogLevel.value();
+        const auto configured = spdlog::level::from_str(configuredName);
+
+        // from_str yields level::off for anything it does not recognise, so a
+        // typo would silence the server entirely. Only accept "off" when that
+        // is what was actually written.
+        if (configured == spdlog::level::off && configuredName != "off")
+        {
+            defaultLogger->warn("Unknown sLogLevel '{}', keeping {}", configuredName,
+                                spdlog::level::to_string_view(defaultLogger->level()));
+        }
+        else if (configured != defaultLogger->level())
+        {
+            defaultLogger->set_level(configured);
+            defaultLogger->info("Log level set to {}", configuredName);
+        }
+    }
+
     if (bConsole)
         cpRunner->StartTerminalIO();
 
