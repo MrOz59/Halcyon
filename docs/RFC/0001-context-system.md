@@ -215,10 +215,22 @@ must be stable precisely because HTDS-200 section 8 forbids identity that
 changes underneath a Context. The prototype documented the constraint and then
 violated it.
 
-Fixing it means translating the handle to a stable game-side identity
-(`FormIdComponent`, i.e. ModId plus BaseId) when recording and when reading, and
-changing the store format accordingly. Steps 9-10 of the scenario remain
-unverified until then.
+**Fixed in `ContextIdentity.h`.** `MakeEntityId` derives the id from the owning
+plugin's filename plus the record's BaseId, hashed with FNV-1a.
+`ContextService::ResolveEntityId` maps a live handle to that value and returns
+nothing when no stable identity exists, in which case the death falls through to
+the legacy path rather than being persisted unusably.
+
+The numeric `ModId` could not be used either: `ModsComponent` assigns it from a
+counter in player-connection order, so the same plugin can hold different ids
+across runs. The filename is what survives.
+
+The store format moved to version 2. A version 1 file parses cleanly but its
+`EntityId` values mean something else, so it is refused outright instead of
+restoring state that points at entities which no longer exist.
+
+Still unverified: whether this makes steps 9-10 pass in the game. That needs
+another two-client test across a restart.
 
 ### First live test, 2026-07-27
 

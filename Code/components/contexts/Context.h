@@ -15,10 +15,16 @@ namespace Halcyon
 {
 using ContextId = std::uint64_t;
 
-// Identifies a scoped world object. The prototype keeps this opaque and
-// server-issued: it is deliberately not a Skyrim FormID, because HTDS-200
-// section 8 requires Context-scoped identity to stay stable even when
-// game-side identifiers change.
+// Identifies a scoped world object across server runs.
+//
+// This MUST NOT be an entt handle or any other per-session value: HTDS-200
+// section 8 requires Context-scoped identity to stay stable for as long as
+// persistence needs it, and a handle is reallocated on every run. Callers are
+// responsible for deriving it from something durable -- on the server that is
+// the owning plugin's filename plus the record's BaseId, since the numeric
+// ModId is assigned in player-connection order and is itself unstable.
+//
+// See MakeEntityId in ContextIdentity.h.
 using EntityId = std::uint64_t;
 
 // Identifies a Player across reconnects. RFC-0001 step 10 requires Context

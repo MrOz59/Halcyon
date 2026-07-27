@@ -109,8 +109,24 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
 
     // Halcyon Context prototype (RFC-0001). While the prototype is disabled
     // this is inert and the legacy global path below runs unchanged.
-    const bool scoped = contextService.IsEnabled() && acMessage.pPlayer &&
-                        contextService.RecordLifeState(*acMessage.pPlayer, message.Id, message.IsDead);
+    //
+    // message.Id is an entt handle, which is reallocated every run; scoping it
+    // directly would persist state that resolves to nothing after a restart.
+    // Fall through to the legacy path when no stable identity exists.
+    Halcyon::EntityId scopedEntityId = 0;
+    bool scoped = false;
+    if (contextService.IsEnabled() && acMessage.pPlayer)
+    {
+        if (const auto entityId = contextService.ResolveEntityId(static_cast<entt::entity>(message.Id)))
+        {
+            scoped = contextService.RecordLifeState(*acMessage.pPlayer, *entityId, message.IsDead);
+            scopedEntityId = *entityId;
+        }
+        else
+        {
+            spdlog::debug("No stable identity for entity {:x}, not scoping its death", message.Id);
+        }
+    }
 
     if (it != characterView.end() && !scoped)
     {
@@ -131,7 +147,7 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
 
     if (scoped)
     {
-        if (!GameServer::Get()->SendToPlayersInRangeObserving(notify, cEntity, message.Id, message.IsDead, acMessage.pPlayer))
+        if (!GameServer::Get()->SendToPlayersInRangeObserving(notify, cEntity, scopedEntityId, message.IsDead, acMessage.pPlayer))
             spdlog::error("{}: SendToPlayersInRangeObserving failed", __FUNCTION__);
 
         // The acting Player is excluded from the broadcast above but owns the

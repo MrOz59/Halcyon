@@ -1,5 +1,6 @@
 #include <Services/ContextService.h>
 
+#include <Components.h>
 #include <Events/PlayerJoinEvent.h>
 #include <Events/PlayerLeaveEvent.h>
 #include <Game/Player.h>
@@ -251,6 +252,46 @@ std::optional<Halcyon::ContextId> ContextService::GetPersonalContext(const Playe
         return std::nullopt;
 
     return it->second;
+}
+
+std::optional<Halcyon::EntityId> ContextService::ResolveEntityId(entt::entity aEntity) const noexcept
+{
+    const auto* pFormIdComponent = m_world.try_get<FormIdComponent>(aEntity);
+    if (!pFormIdComponent)
+        return std::nullopt;
+
+    const GameId& id = pFormIdComponent->Id;
+
+    // ModsComponent hands out ModId from a counter in player-connection order,
+    // so it means nothing after a restart. Map it back to the plugin filename,
+    // which does survive.
+    const auto& modsComponent = m_world.ctx().at<const ModsComponent>();
+
+    const auto findPlugin = [&](const auto& acModList) -> const String*
+    {
+        for (const auto& [filename, entry] : acModList)
+        {
+            if (entry.id == id.ModId)
+                return &filename;
+        }
+
+        return nullptr;
+    };
+
+    const String* pPluginName = findPlugin(modsComponent.GetStandardMods());
+    if (!pPluginName)
+        pPluginName = findPlugin(modsComponent.GetLiteMods());
+
+    if (!pPluginName)
+    {
+        // Happens for records whose plugin the server has never seen, e.g. a
+        // client-only mod. Their state cannot be persisted meaningfully.
+        return std::nullopt;
+    }
+
+    const Halcyon::EntityId entityId = Halcyon::MakeEntityId(std::string_view(pPluginName->c_str(), pPluginName->size()), id.BaseId);
+
+    return entityId == 0 ? std::nullopt : std::optional<Halcyon::EntityId>{entityId};
 }
 
 bool ContextService::RecordLifeState(const Player& acPlayer, Halcyon::EntityId aEntity, bool aDead) noexcept

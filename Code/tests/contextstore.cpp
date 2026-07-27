@@ -96,6 +96,15 @@ TEST_CASE("Malformed input is rejected without partial application", "[contextst
         REQUIRE_FALSE(ContextStore::Deserialize("halcyon-context-store 99\nnext 1 1\n", snapshot));
     }
 
+    SECTION("version 1 is refused rather than misread")
+    {
+        // v1 wrote per-session entt handles as EntityId. The records parse
+        // cleanly but mean something else, so accepting them would restore
+        // state pointing at entities that no longer exist.
+        REQUIRE_FALSE(ContextStore::Deserialize(
+            "halcyon-context-store 1\nnext 3 4\nmember alice 1 1\nlife 1 1048593 1 3\n", snapshot));
+    }
+
     SECTION("missing next record")
     {
         REQUIRE_FALSE(ContextStore::Deserialize("halcyon-context-store 1\nmember alice 1 1\n", snapshot));

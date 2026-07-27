@@ -59,7 +59,11 @@ struct ContextSnapshot
 class ContextStore
 {
 public:
-    static constexpr int kFormatVersion = 1;
+    // Version 2 changed what EntityId means: version 1 wrote per-session entt
+    // handles, which resolve to nothing after a restart. A v1 file would load
+    // without error and silently reference entities that no longer exist, so
+    // the version gate rejects it and the server starts from empty state.
+    static constexpr int kFormatVersion = 2;
 
     // Returns false when the snapshot cannot be represented, leaving aOutput
     // untouched. The only current cause is an account key containing

@@ -13,6 +13,7 @@
 //
 // See docs/RFC/0001-context-system.md.
 
+#include <contexts/ContextIdentity.h>
 #include <contexts/ContextRegistry.h>
 #include <contexts/ContextStore.h>
 
@@ -53,6 +54,12 @@ struct ContextService
     Halcyon::ContextId EnsurePersonalContext(Player& aPlayer) noexcept;
 
     [[nodiscard]] std::optional<Halcyon::ContextId> GetPersonalContext(const Player& acPlayer) const noexcept;
+
+    // Translates a live entt handle into the restart-stable EntityId used by
+    // the Context system. Returns nullopt when the entity carries no usable
+    // game-side identity, in which case its state must not be scoped: a handle
+    // would not survive the next restart.
+    [[nodiscard]] std::optional<Halcyon::EntityId> ResolveEntityId(entt::entity aEntity) const noexcept;
 
     // Records an Actor life state inside the acting Player's Personal Context.
     // Returns false when the prototype is disabled, the Player has no Context,
