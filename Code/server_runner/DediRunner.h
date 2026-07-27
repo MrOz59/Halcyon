@@ -11,6 +11,8 @@
 #include <console/IniSettingsProvider.h>
 #include <common/GameServerInstance.h>
 
+#include "TerminalConsole.h"
+
 #ifdef _WIN32
 #define GS_IMPORT extern __declspec(dllimport)
 #else
@@ -35,18 +37,11 @@ struct DediRunner
     void HandleConsole(const TiltedPhoques::String& acCommand);
 
 private:
-    static void PrintExecutorArrowHack();
-
     void LoadSettings(int argc, char** argv);
 
-    static void ReadStdin(uv_stream_t* apStream, ssize_t aRead, const uv_buf_t* acpBuffer);
-    static void AllocateBuffer(uv_handle_t* apHandle, size_t aSuggestedSize, uv_buf_t* apBuffer);
-
 private:
-    // fs::path m_configPath;
-    //  Order here matters for constructor calling order.
+    // Order here matters for constructor calling order.
     uv_loop_t m_loop;
-    uv_tty_t m_tty;
     fs::path m_SettingsPath;
     bool m_useIni{false};
     Console::ConsoleRegistry m_console;

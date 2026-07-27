@@ -1,0 +1,61 @@
+name: Halcyon native Linux server
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-server:
+    runs-on: ubuntu-22.04
+    if: "!contains(github.event.head_commit.message, 'ci skip')"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout submodules
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --force --recursive --depth=1
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: '3.0.9'
+
+      - name: Cache xmake dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.xmake/packages
+          key: ${{ runner.os }}-xmake-${{ hashFiles('**/xmake.lua') }}
+
+      - name: Update xmake repositories
+        run: xmake repo --update
+
+      - name: Configure
+        run: xmake config --arch=x64 --mode=release --yes -vD
+
+      - name: Build native server and tests
+        run: xmake -y SkyrimServerRunner TPTests
+
+      - name: Run tests
+        run: ./build/linux/x64/release/TPTests
+
+      - name: Stage server artifact
+        run: |
+          mkdir -p halcyon-linux-server
+          cp build/linux/x64/release/SkyrimTogetherServer halcyon-linux-server/
+          cp -r config halcyon-linux-server/ 2>/dev/null || true
+          cp LICENSE halcyon-linux-server/
+
+      - name: Upload native server
+        uses: actions/upload-artifact@v4
+        with:
+          name: Halcyon Linux Server (${{ github.sha }})
+          path: halcyon-linux-server/

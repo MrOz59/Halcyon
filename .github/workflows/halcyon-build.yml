@@ -1,0 +1,66 @@
+name: Halcyon playable build
+
+# Produces the Windows Skyrim client/server binaries used on Windows and through
+# Proton. The client remains a Windows PE binary; the dedicated server also has
+# a native Linux build in halcyon-linux-server.yml.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-windows:
+    uses: ./.github/workflows/windows.yml
+    with:
+      build-mode: 'release'
+      upload-build-for-next-job: true
+
+  test-package-and-upload:
+    runs-on: windows-2022
+    needs: build-windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: internal-job-files
+
+      - name: Run unit tests
+        shell: pwsh
+        run: '& ".\build\windows\x64\release\TPTests.exe"'
+
+      - name: Package build
+        shell: bash
+        run: |
+          mkdir -p halcyon-build/SkyrimTogetherReborn
+          mv build/windows/x64/release/* halcyon-build/SkyrimTogetherReborn
+          cp -r GameFiles/Skyrim/* halcyon-build/
+
+      - name: Separate debug symbols
+        shell: bash
+        run: |
+          mkdir -p halcyon-pdb
+          mv halcyon-build/SkyrimTogetherReborn/SkyrimTogether.pdb halcyon-pdb/ || true
+          mv halcyon-build/SkyrimTogetherReborn/SkyrimTogetherServer.pdb halcyon-pdb/ || true
+          rm -f halcyon-build/SkyrimTogetherReborn/*.pdb
+          rm -f halcyon-build/SkyrimTogetherReborn/*.lib
+          rm -f halcyon-build/SkyrimTogetherReborn/*.exp
+          rm -f halcyon-build/SkyrimTogetherReborn/*Tests.exe
+
+      - name: Upload playable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Halcyon (${{ needs.build-windows.outputs.str-version }})
+          path: halcyon-build/
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: Halcyon Debug Symbols (${{ needs.build-windows.outputs.str-version }})
+          path: halcyon-pdb/

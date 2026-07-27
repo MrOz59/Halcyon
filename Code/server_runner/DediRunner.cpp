@@ -1,10 +1,8 @@
-
 #include "DediRunner.h"
 
 #include <console/CommandSettingsProvider.h>
 
 #include <chrono>
-#include <iostream>
 #include <base/threading/ThreadUtils.h>
 
 namespace
@@ -16,6 +14,7 @@ DediRunner* s_pRunner{nullptr};
 
 // imports
 GS_IMPORT TiltedPhoques::UniquePtr<IGameServerInstance> CreateGameServer(Console::ConsoleRegistry& conReg, const std::function<void()>& aCallback);
+
 // needs to be global
 Console::Setting bConsole{"bConsole", "Enable the console", true};
 
@@ -40,9 +39,13 @@ DediRunner::DediRunner(int argc, char** argv)
 
 DediRunner::~DediRunner()
 {
+    GetTerminalConsole().Shutdown();
+
     if (m_useIni)
         SaveSettingsToIni(m_console, m_SettingsPath);
+
     uv_loop_close(&m_loop);
+    s_pRunner = nullptr;
 }
 
 void DediRunner::LoadSettings(int argc, char** argv)
@@ -58,62 +61,15 @@ void DediRunner::LoadSettings(int argc, char** argv)
         m_SettingsPath = fs::current_path() / kConfigPathName / kSettingsFileName;
         if (!exists(m_SettingsPath))
         {
-            // there is a bug in here... waiting to be found
-            // since we dont register our settings till later, so the server settings might be... missing??
+            // There is a bug in here waiting to be found. Since settings are
+            // registered later, some server settings may be missing.
             create_directory(fs::current_path() / kConfigPathName);
             SaveSettingsToIni(m_console, m_SettingsPath);
             return;
         }
+
         LoadSettingsFromIni(m_console, m_SettingsPath);
     }
-}
-
-struct Context
-{
-    TiltedPhoques::String data;
-    DediRunner* instance;
-};
-
-void DediRunner::ReadStdin(uv_stream_t* apStream, ssize_t aRead, const uv_buf_t* acpBuffer)
-{
-    auto* ctx = static_cast<Context*>(apStream->data);
-
-    if (aRead < 0)
-    {
-        if (aRead == UV_EOF)
-            uv_close(reinterpret_cast<uv_handle_t*>(&apStream), nullptr);
-    }
-    else if (aRead > 0)
-    {
-        for (auto i = 0; i < aRead; ++i)
-        {
-            if (acpBuffer->base[i] == '\n')
-            {
-                ctx->instance->HandleConsole(ctx->data);
-                ctx->data = "";
-            }
-            else
-                ctx->data += acpBuffer->base[i];
-        }
-    }
-
-    // OK to free buffer as write_data copies it.
-    if (acpBuffer->base)
-        TiltedPhoques::Allocator::GetDefault()->Free(acpBuffer->base);
-}
-
-void DediRunner::AllocateBuffer(uv_handle_t* apHandle, size_t aSuggestedSize, uv_buf_t* apBuffer)
-{
-    *apBuffer = uv_buf_init(static_cast<char*>(TiltedPhoques::Allocator::GetDefault()->Allocate(aSuggestedSize)), static_cast<uint32_t>(aSuggestedSize));
-}
-
-void DediRunner::PrintExecutorArrowHack()
-{
-    // Force:
-    // This is a hack to get the executor arrow.
-    // If you find a way to do this through the ConOut log channel
-    // please let me know (The issue is the forced formatting for that channel and the forced null termination)
-    // fmt::print(">>>");
 }
 
 void DediRunner::RunGSThread()
@@ -121,29 +77,37 @@ void DediRunner::RunGSThread()
     while (m_pServerInstance->IsListening())
     {
         m_pServerInstance->Update();
+
         if (bConsole)
         {
             uv_run(&m_loop, UV_RUN_NOWAIT);
-            if (m_console.Update())
-                PrintExecutorArrowHack();
+            m_console.Update();
         }
     }
 }
 
 void DediRunner::StartTerminalIO()
 {
-    spdlog::get("ConOut")->info("Server started, type /help for a list of commands.");
-    PrintExecutorArrowHack();
+    auto& terminal = GetTerminalConsole();
 
-    uv_tty_init(&m_loop, &m_tty, 0, 1);
-    uv_tty_set_mode(&m_tty, UV_TTY_MODE_NORMAL);
+    const bool interactive = terminal.Initialize(
+        m_loop,
+        [this](const std::string& acCommand)
+        {
+            HandleConsole(acCommand);
+        },
+        [this]()
+        {
+            RequestKill();
+        });
 
-    static Context ctx;
-    ctx.instance = this;
+    if (auto logger = spdlog::get(KCompilerStopThisBullshit))
+    {
+        logger->info("Halcyon server started. Type /help for a list of commands.");
 
-    m_tty.data = &ctx;
-
-    uv_read_start(reinterpret_cast<uv_stream_t*>(&m_tty), AllocateBuffer, ReadStdin);
+        if (!interactive)
+            logger->info("Interactive terminal features are unavailable; using plain console mode.");
+    }
 }
 
 void DediRunner::RequestKill()
@@ -151,9 +115,8 @@ void DediRunner::RequestKill()
     m_pServerInstance->Shutdown();
 
 #if defined(_WIN32)
-    // work around Control Handler exception (Control-C) being set
-    // https://cdn.discordapp.com/attachments/675107843573022779/941772837339930674/unknown.png
-    // being set.
+    // Work around the Control Handler exception (Control-C) being set while
+    // running under a debugger.
     if (IsDebuggerPresent())
     {
         using namespace std::chrono_literals;
@@ -164,12 +127,13 @@ void DediRunner::RequestKill()
 
 void DediRunner::HandleConsole(const TiltedPhoques::String& acCommand)
 {
+    if (acCommand.empty())
+        return;
+
     using exr = Console::ConsoleRegistry::ExecutionResult;
 
-    exr r = m_console.TryExecuteCommand(acCommand);
+    const exr result = m_console.TryExecuteCommand(acCommand);
 
-    PrintExecutorArrowHack();
-
-    if (r == exr::kDirty && m_useIni)
+    if (result == exr::kDirty && m_useIni)
         SaveSettingsToIni(m_console, m_SettingsPath);
 }

@@ -1,11 +1,6 @@
-name: Build windows
+name: Build Windows
 
 on:
-  pull_request:
-  push:
-    branches:
-      - master
-      - prerel
   workflow_call:
     inputs:
       build-mode:
@@ -18,7 +13,7 @@ on:
         default: false
     outputs:
       str-version:
-        description: "Skyrim Together version string"
+        description: "Halcyon version string"
         value: ${{ jobs.build.outputs.version }}
 
 jobs:
@@ -37,7 +32,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # We need full history in order to create a version string (BuildInfo.h)
           fetch-depth: 0
 
       - name: Checkout submodules
@@ -45,41 +39,31 @@ jobs:
           git submodule sync --recursive
           git submodule update --init --force --recursive --depth=1
 
-      - name: Checkout master on tag push
-        if: github.ref_type == 'tag'
-        # Checkout only if the tag was pushed to master
-        run: (git rev-parse HEAD) -eq (git rev-parse origin/master) -and (git checkout master)
-
       - name: Cache xmake dependencies
         uses: actions/cache@v4
         with:
           path: ~/AppData/Local/.xmake/packages
           key: ${{ runner.os }}-xmake-${{ hashFiles('**/xmake.lua') }}
 
-      # Install xmake
       - name: Setup xmake
         uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: 3.0.9
-          actions-cache-folder: '.xmake-cache' # This doesn't cache dependencies, only xmake itself
+          actions-cache-folder: '.xmake-cache'
           actions-cache-key: ${{ matrix.os }}
 
       - name: Configure xmake and install dependencies
         run: xmake config --arch=${{ matrix.arch }} --mode=${{ inputs.build-mode }} --yes -vD
 
-      # Build the client
       - name: Build with xmake
         run: |
           xmake -y
-          echo "STR_BUILD_DIR=build/windows/${{ matrix.arch }}/${{ inputs.build-mode }}/" >> $env:GITHUB_ENV
+          echo "HALCYON_BUILD_DIR=build/windows/${{ matrix.arch }}/${{ inputs.build-mode }}/" >> $env:GITHUB_ENV
 
-      # Create distrib
-      - name: Output distrib binaries via xmake
+      - name: Output distribution binaries
         run: |
           xmake install -o distrib
-          cp -Force -Recurse distrib/bin/* ${{ env.STR_BUILD_DIR }}
-
-      # Building the Together UI
+          cp -Force -Recurse distrib/bin/* ${{ env.HALCYON_BUILD_DIR }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -93,26 +77,27 @@ jobs:
           cache-dependency-path: Code/skyrim_ui/pnpm-lock.yaml
           cache: 'pnpm'
 
-      - name: Build the UI
+      - name: Build the legacy web UI assets
         run: |
           pnpm --prefix Code/skyrim_ui/ install
           pnpm --prefix Code/skyrim_ui/ deploy:production
-          cp -r Code/skyrim_ui/dist/UI ${{ env.STR_BUILD_DIR }}
+          cp -r Code/skyrim_ui/dist/UI ${{ env.HALCYON_BUILD_DIR }}
 
       - id: output-version
-        # Use the closest tag when available. Fork branches without tags (such as
-        # linux-port) fall back to the short SHA instead of failing.
+        shell: pwsh
         run: |
           $version = git describe --tags 2>$null
-          if (-not $version) { $version = "linux-port-$(git rev-parse --short HEAD)" }
+          if (-not $version) {
+            $version = "halcyon-$(git rev-parse --short HEAD)"
+          }
           echo "version=$version" >> $env:GITHUB_OUTPUT
 
-      - name: Upload build files for the next job
+      - name: Upload build files for packaging
         if: ${{ inputs.upload-build-for-next-job }}
         uses: actions/upload-artifact@v4
         with:
           name: internal-job-files
           retention-days: 1
           path: |
-            ${{ env.STR_BUILD_DIR }}
+            ${{ env.HALCYON_BUILD_DIR }}
             GameFiles/Skyrim/

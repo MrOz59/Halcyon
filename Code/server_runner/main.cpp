@@ -1,4 +1,3 @@
-
 #include <TiltedCore/Filesystem.hpp>
 #include <chrono>
 #include <filesystem>
@@ -7,13 +6,13 @@
 #include <thread>
 
 #include <spdlog/sinks/rotating_file_sink.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 
 #include <Setting.h>
 #include <base/simpleini/SimpleIni.h>
 #include <base/threading/ThreadUtils.h>
 
 #include "DediRunner.h"
+#include "TerminalConsole.h"
 
 #ifdef _WIN32
 #include <base/dialogues/win/TaskDialog.h>
@@ -56,24 +55,28 @@ struct LogInstance
         std::error_code ec;
         fs::create_directory("logs", ec);
 
-        auto consoleOut = spdlog::stdout_color_mt(KCompilerStopThisBullshit);
-        consoleOut->set_pattern(">%$ %v");
+        const auto terminalSink = MakeTerminalConsoleSink();
 
-        // make the client aware of this logger.
+        auto consoleOut = std::make_shared<logger>(KCompilerStopThisBullshit, terminalSink);
+        consoleOut->set_pattern("%v");
+        spdlog::register_logger(consoleOut);
+
+        // Make the server library aware of the command-output logger.
         RegisterLogger(consoleOut);
 
-        auto fileOut = std::make_shared<sinks::rotating_file_sink_mt>(std::string("logs/") + kLogFileName, kLogFileSizeCap, 3);
-        auto serverOut = std::make_shared<sinks::stdout_color_sink_mt>();
-        auto globalOut = std::make_shared<logger>("", sinks_init_list{serverOut, fileOut});
-        globalOut->set_pattern("%^[%Y-%m-%d %H:%M:%S.%e] [%l] [tid %t] %$ %v");
+        auto fileOut = std::make_shared<sinks::rotating_file_sink_mt>(
+            std::string("logs/") + kLogFileName,
+            kLogFileSizeCap,
+            3);
 
+        auto globalOut = std::make_shared<logger>("", sinks_init_list{terminalSink, fileOut});
+        globalOut->set_pattern("%^[%Y-%m-%d %H:%M:%S.%e] [%l] [tid %t]%$ %v");
         globalOut->set_level(level::from_str(sLogLevel.value()));
-        spdlog::flush_every(std::chrono::seconds(2));
 
-        // as the library is compiled into the client + server we have to do this twice
+        spdlog::flush_every(std::chrono::seconds(2));
         spdlog::set_default_logger(globalOut);
 
-        // also make the client aware of the file loggers
+        // Also make the server library aware of the default logger.
         SetDefaultLogger(globalOut);
     }
 
@@ -96,8 +99,8 @@ static bool RegisterQuitHandler()
                 pRunner->RequestKill();
                 return TRUE;
             }
-            // if the user kills during the ctor we deny the request
-            // to save our dear life.
+            // If the user kills during the constructor, deny the request to
+            // avoid destroying partially initialized state.
             return FALSE;
         }
         default:
@@ -108,16 +111,14 @@ static bool RegisterQuitHandler()
     return SetConsoleCtrlHandler(CtrlHandler, TRUE);
 
 #elif defined(__linux__)
-    static auto CtrlHandler = ([](int aSig) {
+    static auto CtrlHandler = ([](int) {
         if (auto* pRunner = GetDediRunner())
-        {
             pRunner->RequestKill();
-        }
     });
 
     signal(SIGINT, CtrlHandler);
     signal(SIGTERM, CtrlHandler);
-    signal(SIGKILL, CtrlHandler);
+    return true;
 #else
     return true;
 #endif
@@ -126,19 +127,25 @@ static bool RegisterQuitHandler()
 #ifdef _WIN32
 static bool ShowEULADialog()
 {
-    Base::TaskDialog dia(LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(102)), L"Tilted Platform Agreement", L"Confirm the Tilted Platform EULA", L"TODO: Link to EULA", nullptr);
+    Base::TaskDialog dia(
+        LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(102)),
+        L"Tilted Platform Agreement",
+        L"Confirm the Tilted Platform EULA",
+        L"TODO: Link to EULA",
+        nullptr);
+
     dia.AppendButton(100, L"Accept EULA");
     dia.AppendButton(101, L"Deny EULA");
-    dia.SetDefaultButton(101 /*So they have to think about it*/);
+    dia.SetDefaultButton(101 /* So they have to think about it */);
 
     return dia.Show() == 100;
 }
 #endif
 
-// The eula can be accepted in 3 ways:
-// - Either confirm the dialog on startup(windows only)
-// - Or signal agreement using an environment variable
-// - Or Simply set bConfirmEULA in EULA.txt to true
+// The EULA can be accepted in three ways:
+// - Confirm the dialog on startup (Windows only)
+// - Signal agreement using an environment variable
+// - Set bConfirmEULA in EULA.txt to true
 static bool IsEULAAccepted()
 {
     const auto path = fs::current_path() / kConfigPathName / kEULAName;
@@ -153,7 +160,6 @@ static bool IsEULAAccepted()
     auto saveFile = [&]()
     {
 #ifdef _WIN32
-        // try using the dialog
         if (!preAccept)
             preAccept = ShowEULADialog();
 #endif
@@ -167,14 +173,11 @@ static bool IsEULAAccepted()
     };
 
     if (!exists(path))
-    {
         return saveFile();
-    }
 
     const auto data = TiltedPhoques::LoadFile(path);
 
     CSimpleIni si;
-
     if (si.LoadData(data.c_str()) != SI_OK)
         return preAccept;
 
@@ -197,7 +200,6 @@ void ConfigureConsoleMode()
 {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
-    // Set the input code page to UTF-8
     SetConsoleCP(CP_UTF8);
 #endif
 }
@@ -206,7 +208,7 @@ int main(int argc, char** argv)
 {
     ConfigureConsoleMode();
 
-    // the binaries are not from the same commit.
+    // The binaries are not from the same commit.
     if (!CheckBuildTag(kBuildTag))
         return 1;
 
@@ -215,15 +217,13 @@ int main(int argc, char** argv)
     LogInstance logger;
     (void)logger;
 
-    // Note(Vince): This started crashing on 1.7+ lets disable it for now.
-    // RegisterQuitHandler(); 
+    // Interactive Ctrl+C is handled by TerminalConsole. The legacy OS signal
+    // handler remains disabled because it calls non-signal-safe server code.
 
     // Keep stack free.
     const auto cpRunner{std::make_unique<DediRunner>(argc, argv)};
     if (bConsole)
-    {
         cpRunner->StartTerminalIO();
-    }
 
     cpRunner->RunGSThread();
 
