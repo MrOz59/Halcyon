@@ -94,7 +94,9 @@ void DediRunner::StartTerminalIO()
         m_loop,
         [this](const std::string& acCommand)
         {
-            HandleConsole(acCommand);
+            // The terminal frontend deals in std::string, the console registry
+            // in TiltedPhoques::String (custom allocator), so convert here.
+            HandleConsole(TiltedPhoques::String(acCommand.c_str(), acCommand.length()));
         },
         [this]()
         {
