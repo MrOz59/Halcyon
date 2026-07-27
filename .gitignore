@@ -88,3 +88,9 @@ distrib_releasedbg/
 new_addresses.txt
 
 packaged/*
+
+# Downloaded CI artifacts unpacked for local testing. The native Linux server
+# ships as a runner plus libSTServer.so and is several MB.
+Halcyon Linux Server/
+SkyrimTogetherServer
+libSTServer.so
