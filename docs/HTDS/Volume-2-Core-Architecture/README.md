@@ -16,8 +16,14 @@ The documents in this volume are currently **conceptual**. They define a working
 | HTDS-150 | [Entity Model](150-Entity-Model.md) | Draft Skeleton |
 | HTDS-160 | [Replication and Relevance](160-Replication-and-Relevance.md) | Draft Skeleton |
 | HTDS-170 | [Persistence](170-Persistence.md) | Draft Skeleton |
-| HTDS-180 | Plugin Host | Planned |
-| HTDS-190 | Runtime and Lifecycle | Planned |
+| HTDS-180 | [Plugin Host](180-Plugin-Host.md) | Draft Skeleton |
+| HTDS-190 | [Runtime and Lifecycle](190-Runtime-and-Lifecycle.md) | Draft Skeleton |
+
+## Current status
+
+The initial Volume 2 skeleton is complete.
+
+It is not an implementation claim. The next stage is to validate selected architecture assumptions through source mapping, RFCs, ADRs, and focused prototypes.
 
 ## Status policy
 
