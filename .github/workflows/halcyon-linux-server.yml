@@ -64,12 +64,38 @@ jobs:
       - name: Run tests
         run: "${{ env.HALCYON_BUILD_DIR }}/TPTests"
 
+      # SkyrimTogetherServer is a thin runner linked against libSTServer.so,
+      # which holds the actual server. Its RUNPATH is $ORIGIN, so the shared
+      # object has to sit next to the executable or it fails to start with
+      # "cannot open shared object file".
       - name: Stage server artifact
         run: |
           mkdir -p halcyon-linux-server
           cp "${{ env.HALCYON_BUILD_DIR }}/SkyrimTogetherServer" halcyon-linux-server/
+
+          shared_objects="$(find "${{ env.HALCYON_BUILD_DIR }}" -maxdepth 1 -type f -name '*.so')"
+          if [ -z "$shared_objects" ]; then
+            echo "No shared objects found next to the server binary:"
+            find "${{ env.HALCYON_BUILD_DIR }}" -maxdepth 1
+            exit 1
+          fi
+          echo "$shared_objects" | xargs -I {} cp {} halcyon-linux-server/
+
           cp -r config halcyon-linux-server/ 2>/dev/null || true
           cp LICENSE halcyon-linux-server/
+
+      # Fails the build if the packaged server cannot resolve its libraries,
+      # which is invisible until someone runs the artifact.
+      - name: Verify artifact links
+        run: |
+          missing="$(cd halcyon-linux-server && ldd ./SkyrimTogetherServer | grep 'not found' || true)"
+          if [ -n "$missing" ]; then
+            echo "Packaged server has unresolved libraries:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "All libraries resolve:"
+          cd halcyon-linux-server && ldd ./SkyrimTogetherServer
 
       - name: Upload native server
         uses: actions/upload-artifact@v4
