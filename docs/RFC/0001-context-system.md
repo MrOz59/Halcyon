@@ -180,6 +180,46 @@ transaction boundary, no schema migration, no audit trail, and no `fsync`, so a
 host crash can still lose the most recent save. It is the smallest mechanism
 that lets steps 9-10 be exercised.
 
+### Second live test, 2026-07-27
+
+Two clients (`S_Tara`, `TestCharacter`), debug logging enabled.
+
+**Scoping works.** `TestCharacter` killed three NPCs and the server recorded
+every one in context 2 only:
+
+```text
+Entity 100045 dead=true in context 2
+Entity 10001e dead=true in context 2
+Entity 100025 dead=true in context 2
+```
+
+Nothing was written to context 1. Both players also recovered their existing
+Contexts by account key across a restart.
+
+**Persistence restores state that no longer resolves.** The NPCs killed in the
+previous session were alive again. The scoped state loaded correctly
+(`Loaded 2 contexts and 3 scoped states`) but pointed at entities that no longer
+exist:
+
+| Session | Persisted entity ids |
+| --- | --- |
+| First | `100011`, `200024`, `300022` |
+| Second | `100045`, `10001e`, `100025` |
+
+The cause is that `EntityId` is populated from `RequestDeathStateChange::Id`,
+which is an `entt::entity` — a per-session handle. The same Skyrim NPC receives
+a different handle on every server run, so restored state can never match it.
+
+This contradicts the requirement stated in `Context.h`, which says `EntityId`
+must be stable precisely because HTDS-200 section 8 forbids identity that
+changes underneath a Context. The prototype documented the constraint and then
+violated it.
+
+Fixing it means translating the handle to a stable game-side identity
+(`FormIdComponent`, i.e. ModId plus BaseId) when recording and when reading, and
+changing the store format accordingly. Steps 9-10 of the scenario remain
+unverified until then.
+
 ### First live test, 2026-07-27
 
 Two clients, native Linux server, prototype enabled. Findings:
@@ -188,9 +228,10 @@ Two clients, native Linux server, prototype enabled. Findings:
 `config/halcyon-contexts.txt` on leave, and reloaded on the next start
 (`Loaded 2 contexts`). Account keys resolved as intended.
 
-**Scoping did not happen.** The store recorded `0 scoped states` and both
-clients saw the killed NPCs die. The cause is a second death path that the
-prototype does not intercept:
+**Scoping appeared not to happen**, but this reading was drawn from a store file
+read before the server had written it; the second test above shows the scoping
+path does work. The concern about a second death path below stands on its own
+evidence and is unaffected.
 
 | Path | Location | Covered |
 | --- | --- | --- |
