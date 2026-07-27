@@ -48,13 +48,26 @@ jobs:
       - name: Build tests
         run: xmake -y TPTests
 
+      # xmake names the output directory after the canonical arch (x86_64), not
+      # the --arch=x64 alias passed to config, so locate the binaries instead of
+      # hardcoding build/linux/x64/release.
+      - name: Locate build output
+        run: |
+          test_binary="$(find build/linux -type f -name TPTests | head -n 1)"
+          if [ ! -x "$test_binary" ]; then
+            echo "Could not locate the TPTests binary under build/linux:"
+            find build/linux -maxdepth 3
+            exit 1
+          fi
+          echo "HALCYON_BUILD_DIR=$(dirname "$test_binary")" >> "$GITHUB_ENV"
+
       - name: Run tests
-        run: ./build/linux/x64/release/TPTests
+        run: "${{ env.HALCYON_BUILD_DIR }}/TPTests"
 
       - name: Stage server artifact
         run: |
           mkdir -p halcyon-linux-server
-          cp build/linux/x64/release/SkyrimTogetherServer halcyon-linux-server/
+          cp "${{ env.HALCYON_BUILD_DIR }}/SkyrimTogetherServer" halcyon-linux-server/
           cp -r config halcyon-linux-server/ 2>/dev/null || true
           cp LICENSE halcyon-linux-server/
 
