@@ -9,6 +9,16 @@ This RFC proposes the first implementable version of the Halcyon Context system.
 
 The initial version is deliberately narrow. It is intended to validate Context-aware replication before attempting complete quest synchronization or cell instancing.
 
+> **The use case in this document is under revision.** Live testing showed that
+> scoping *every* Actor death is both too broad — generic actors gain nothing
+> from it — and too narrow, since a scoped merchant is still permanently dead
+> for the player who killed them. RFC-0004 reframes the problem as world service
+> continuity and proposes classifying NPCs instead.
+>
+> The mechanisms built here (Context registry, membership, visibility rule,
+> persistence, restart-stable identity) are unaffected and are reused by
+> RFC-0004. What is in question is which actors they should apply to.
+
 ## Problem
 
 Two Players may occupy the same physical area while requiring different state for one quest-critical actor or object.
