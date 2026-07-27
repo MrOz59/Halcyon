@@ -105,8 +105,19 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
 
     const auto it = characterView.find(static_cast<entt::entity>(message.Id));
 
-    if (it != characterView.end())
+    auto& contextService = m_world.GetContextService();
+
+    // Halcyon Context prototype (RFC-0001). While the prototype is disabled
+    // this is inert and the legacy global path below runs unchanged.
+    const bool scoped = contextService.IsEnabled() && acMessage.pPlayer &&
+                        contextService.RecordLifeState(*acMessage.pPlayer, message.Id, message.IsDead);
+
+    if (it != characterView.end() && !scoped)
     {
+        // CharacterComponent holds a single life state per Entity, so it can
+        // only represent the global view. A scoped death is deliberately not
+        // written here: doing so would leak one Player's Context into every
+        // other Player's world state.
         auto& characterComponent = characterView.get<CharacterComponent>(*it);
         characterComponent.SetDead(message.IsDead);
         spdlog::debug("Updating death state {:x}:{}", message.Id, message.IsDead);
@@ -117,6 +128,18 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
     notify.IsDead = message.IsDead;
 
     const entt::entity cEntity = static_cast<entt::entity>(message.Id);
-    if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer))
+
+    if (scoped)
+    {
+        if (!GameServer::Get()->SendToPlayersInRangeObserving(notify, cEntity, message.Id, message.IsDead, acMessage.pPlayer))
+            spdlog::error("{}: SendToPlayersInRangeObserving failed", __FUNCTION__);
+
+        // The acting Player is excluded from the broadcast above but owns the
+        // scoped state, so tell them explicitly.
+        acMessage.pPlayer->Send(notify);
+    }
+    else if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer))
+    {
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+    }
 }

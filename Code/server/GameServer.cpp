@@ -738,6 +738,47 @@ bool GameServer::SendToPlayersInRange(const ServerMessage& acServerMessage, cons
     return true;
 }
 
+bool GameServer::SendToPlayersInRangeObserving(const ServerMessage& acServerMessage, const entt::entity acOrigin, const Halcyon::EntityId aEntity, const bool aDead, const Player* apExcludedPlayer) const
+{
+    if (!m_pWorld->valid(acOrigin))
+    {
+        spdlog::error("Entity is invalid: {:X}", World::ToInteger(acOrigin));
+        return false;
+    }
+
+    const auto view = m_pWorld->view<CellIdComponent>();
+    const auto it = view.find(acOrigin);
+
+    if (it == view.end())
+    {
+        spdlog::warn("Cell component not found for entity {:X}", World::ToInteger(acOrigin));
+        return false;
+    }
+
+    const auto& cellComponent = view.get<CellIdComponent>(*it);
+
+    bool isDragon = false;
+    if (const auto* characterComponent = m_pWorld->try_get<CharacterComponent>(acOrigin))
+        isDragon = characterComponent->IsDragon();
+
+    const auto& contextService = m_pWorld->GetContextService();
+
+    for (Player* pPlayer : m_pWorld->GetPlayerManager())
+    {
+        if (!cellComponent.IsInRange(pPlayer->GetCellComponent(), isDragon) || pPlayer == apExcludedPlayer)
+            continue;
+
+        // A Player observes the scoped value only when one of their Contexts
+        // recorded it. Absence means "no scoped opinion", so the Player keeps
+        // whatever base game data says and must not receive this message.
+        const auto observed = contextService.GetObservedLifeState(*pPlayer, aEntity);
+        if (observed && *observed == aDead)
+            pPlayer->Send(acServerMessage);
+    }
+
+    return true;
+}
+
 void GameServer::SendToParty(const ServerMessage& acServerMessage, const PartyComponent& acPartyComponent, const Player* apExcludeSender) const
 {
     if (!acPartyComponent.JoinedPartyId.has_value())

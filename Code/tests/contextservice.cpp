@@ -13,6 +13,7 @@
 
 #include <map>
 #include <optional>
+#include <vector>
 
 #include <catch2/catch.hpp>
 
@@ -122,6 +123,27 @@ private:
 constexpr EntityId kActor = 0x2000;
 constexpr std::uint32_t kServerPlayerA = 1;
 constexpr std::uint32_t kServerPlayerB = 2;
+
+// Mirrors the recipient rule in GameServer::SendToPlayersInRangeObserving:
+// a Player in range receives the scoped notification only when one of their
+// Contexts recorded exactly this value. The acting Player is excluded here and
+// notified separately by ActorValueService.
+std::vector<std::uint32_t> ScopedRecipients(const ContextServiceLogic& acService, const std::vector<std::uint32_t>& acInRange, EntityId aEntity, bool aDead, std::uint32_t aActingPlayer)
+{
+    std::vector<std::uint32_t> recipients;
+
+    for (const std::uint32_t player : acInRange)
+    {
+        if (player == aActingPlayer)
+            continue;
+
+        const auto observed = acService.GetObservedLifeState(player, aEntity);
+        if (observed && *observed == aDead)
+            recipients.push_back(player);
+    }
+
+    return recipients;
+}
 } // namespace
 
 TEST_CASE("Disabled prototype records and reports nothing", "[contextservice]")
@@ -222,6 +244,85 @@ TEST_CASE("Context survives disconnect within one server run", "[contextservice]
     const ContextId afterReconnect = service.EnsurePersonalContext(reconnectedId);
     REQUIRE(afterReconnect != context);
     REQUIRE_FALSE(service.GetObservedLifeState(reconnectedId, kActor).has_value());
+}
+
+TEST_CASE("Scoped death reaches only the acting player's context", "[contextservice]")
+{
+    ContextServiceLogic service;
+    service.SetEnabled(true);
+
+    service.EnsurePersonalContext(kServerPlayerA);
+    service.EnsurePersonalContext(kServerPlayerB);
+
+    // Both Players stand in the same cell, so both are in range.
+    const std::vector<std::uint32_t> inRange{kServerPlayerA, kServerPlayerB};
+
+    REQUIRE(service.RecordLifeState(kServerPlayerA, kActor, true));
+
+    // B is in range but has no scoped opinion, so B must not be notified.
+    // This is the isolation the legacy SendToPlayersInRange cannot express.
+    const auto recipients = ScopedRecipients(service, inRange, kActor, true, kServerPlayerA);
+    REQUIRE(recipients.empty());
+}
+
+TEST_CASE("Players sharing an observation are all notified", "[contextservice]")
+{
+    ContextServiceLogic service;
+    service.SetEnabled(true);
+
+    service.EnsurePersonalContext(kServerPlayerA);
+    service.EnsurePersonalContext(kServerPlayerB);
+
+    const std::vector<std::uint32_t> inRange{kServerPlayerA, kServerPlayerB};
+
+    // Both Contexts independently recorded the Actor as dead.
+    REQUIRE(service.RecordLifeState(kServerPlayerA, kActor, true));
+    REQUIRE(service.RecordLifeState(kServerPlayerB, kActor, true));
+
+    const auto recipients = ScopedRecipients(service, inRange, kActor, true, kServerPlayerA);
+    REQUIRE(recipients == std::vector<std::uint32_t>{kServerPlayerB});
+}
+
+TEST_CASE("A contradicting observation is not overwritten by the broadcast", "[contextservice]")
+{
+    ContextServiceLogic service;
+    service.SetEnabled(true);
+
+    service.EnsurePersonalContext(kServerPlayerA);
+    service.EnsurePersonalContext(kServerPlayerB);
+
+    const std::vector<std::uint32_t> inRange{kServerPlayerA, kServerPlayerB};
+
+    // B has seen the Actor alive; A now kills it inside A's own Context.
+    REQUIRE(service.RecordLifeState(kServerPlayerB, kActor, false));
+    REQUIRE(service.RecordLifeState(kServerPlayerA, kActor, true));
+
+    // B holds the opposite value and must not receive the death.
+    const auto recipients = ScopedRecipients(service, inRange, kActor, true, kServerPlayerA);
+    REQUIRE(recipients.empty());
+
+    const auto observedByB = service.GetObservedLifeState(kServerPlayerB, kActor);
+    REQUIRE(observedByB.has_value());
+    REQUIRE_FALSE(*observedByB);
+}
+
+TEST_CASE("Out-of-range players are never scoped recipients", "[contextservice]")
+{
+    ContextServiceLogic service;
+    service.SetEnabled(true);
+
+    service.EnsurePersonalContext(kServerPlayerA);
+    service.EnsurePersonalContext(kServerPlayerB);
+
+    REQUIRE(service.RecordLifeState(kServerPlayerA, kActor, true));
+    REQUIRE(service.RecordLifeState(kServerPlayerB, kActor, true));
+
+    // B shares the observation but is outside the cell range; the Context rule
+    // narrows the range rule and never widens it.
+    const std::vector<std::uint32_t> inRange{kServerPlayerA};
+
+    const auto recipients = ScopedRecipients(service, inRange, kActor, true, kServerPlayerA);
+    REQUIRE(recipients.empty());
 }
 
 TEST_CASE("Reconnect under the same server id rejoins the context", "[contextservice]")

@@ -1,11 +1,31 @@
 #include <Services/ContextService.h>
 
+#include <Events/PlayerJoinEvent.h>
+#include <Events/PlayerLeaveEvent.h>
 #include <Game/Player.h>
 #include <World.h>
 
-ContextService::ContextService(World& aWorld) noexcept
+ContextService::ContextService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
+    , m_playerJoinConnection(aDispatcher.sink<PlayerJoinEvent>().connect<&ContextService::OnPlayerJoin>(this))
+    , m_playerLeaveConnection(aDispatcher.sink<PlayerLeaveEvent>().connect<&ContextService::OnPlayerLeave>(this))
 {
+}
+
+void ContextService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
+{
+    if (!m_enabled || !acEvent.pPlayer)
+        return;
+
+    EnsurePersonalContext(*acEvent.pPlayer);
+}
+
+void ContextService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
+{
+    if (!acEvent.pPlayer)
+        return;
+
+    OnPlayerDisconnected(*acEvent.pPlayer);
 }
 
 std::optional<Halcyon::PlayerId> ContextService::FindPlayerId(const Player& acPlayer) const noexcept

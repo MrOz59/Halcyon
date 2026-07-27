@@ -140,30 +140,39 @@ Implemented in `Code/components/contexts/`:
 
 Implemented in `Code/server/Services/ContextService.{h,cpp}`:
 
-- Personal Context allocation per Player, registered in `World` and reachable
-  through `World::GetContextService`;
+- Personal Context allocation per Player, registered in `World`, reachable
+  through `World::GetContextService`, and driven by `PlayerJoinEvent` /
+  `PlayerLeaveEvent`;
 - translation from the server's `Player::GetId` to a Context-side `PlayerId`;
-- `RecordLifeState` / `GetObservedLifeState`, the entry points a Context-aware
-  replication path would call.
+- `RecordLifeState` / `GetObservedLifeState`.
 
-**The service is disabled by default and no gameplay path calls it.** While
-disabled every entry point is inert, so the legacy global broadcast remains the
-only source of Actor life state and existing behaviour is unchanged.
+Implemented in the death path:
+
+- `ActorValueService::OnDeathStateChange` records the death in the acting
+  Player's Personal Context and, when it does, skips the single global
+  `CharacterComponent` write, which can only represent one world view;
+- `GameServer::SendToPlayersInRangeObserving` applies the same range rule as
+  `SendToPlayersInRange` and then narrows it to Players whose Context recorded
+  the same value.
+
+`SendToPlayersInRange` itself is unchanged and remains the path used by the
+other 40 call sites.
+
+**The prototype is disabled by default.** While disabled every entry point is
+inert, `OnDeathStateChange` takes its original branch, and existing behaviour is
+unchanged.
 
 Covered by unit tests in `Code/tests/contexts.cpp` and
 `Code/tests/contextservice.cpp`, including the divergence described in steps 1-8
-of the prototype scenario.
+of the prototype scenario and the recipient rule for scoped notifications.
 
 Not implemented:
 
-- **Death does not reach the service.** `CharacterService::BroadcastActorData`
-  still applies one `CharacterComponent` per Entity and sends it to everyone in
-  range via `GameServer::SendToPlayersInRange`, which filters by distance only.
-  This is risk 2 below, confirmed in the current code: there is as yet nowhere
-  to hold two divergent values for one Actor.
 - **Persistence.** The registry is in-memory only. `Player::GetId` is a
   per-process counter, so Context membership does not survive a restart and
   steps 9-10 of the scenario are unverified.
+- **Enabling the prototype.** Nothing exposes `SetEnabled`; there is no console
+  command, setting, or capability yet, so the path is unreachable at runtime.
 - **Protocol.** No capability, membership snapshot, scoped Life State message,
   or resync request exists. The open question about Context ID placement remains
   unanswered and is deliberately not pre-empted by the current types.

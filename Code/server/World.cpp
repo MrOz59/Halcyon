@@ -45,7 +45,7 @@ World::World()
 
     // Halcyon Context prototype (RFC-0001). Disabled by default: it records
     // nothing and affects no replication until explicitly enabled.
-    ctx().emplace<ContextService>(*this);
+    ctx().emplace<ContextService>(*this, m_dispatcher);
 
     ESLoader::ESLoader loader;
     // emplace loaded mods into modscomponent.

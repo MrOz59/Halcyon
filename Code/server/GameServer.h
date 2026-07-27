@@ -62,6 +62,13 @@ struct GameServer final : Server
     void SendToParty(const ServerMessage& acServerMessage, const PartyComponent& acPartyComponent, const Player* apExcludeSender = nullptr) const;
     void SendToPartyInRange(const ServerMessage& acServerMessage, const PartyComponent& acPartyComponent, const entt::entity acOrigin, const Player* apExcludeSender = nullptr) const;
 
+    // Halcyon Context prototype (RFC-0001): same range rule as
+    // SendToPlayersInRange, additionally restricted to Players that observe
+    // acEntity as scoped by the Context system. Used only while the Context
+    // prototype is enabled; SendToPlayersInRange is unchanged and remains the
+    // path every other system uses.
+    bool SendToPlayersInRangeObserving(const ServerMessage& acServerMessage, const entt::entity acOrigin, Halcyon::EntityId aEntity, bool aDead, const Player* apExcludeSender = nullptr) const;
+
     const Info& GetInfo() const noexcept { return m_info; }
 
     bool IsRunning() const noexcept { return !m_requestStop; }

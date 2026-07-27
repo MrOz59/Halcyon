@@ -21,10 +21,12 @@
 
 struct World;
 struct Player;
+struct PlayerJoinEvent;
+struct PlayerLeaveEvent;
 
 struct ContextService
 {
-    explicit ContextService(World& aWorld) noexcept;
+    ContextService(World& aWorld, entt::dispatcher& aDispatcher) noexcept;
     ~ContextService() noexcept = default;
 
     TP_NOCOPYMOVE(ContextService);
@@ -39,11 +41,6 @@ struct ContextService
     // Returns kInvalidContextId when the prototype is disabled.
     Halcyon::ContextId EnsurePersonalContext(Player& aPlayer) noexcept;
 
-    // Drops the in-memory association for a disconnecting Player. The Context
-    // and its scoped state are intentionally kept: RFC-0001 step 10 requires
-    // them to outlive the Session. Nothing persists them across a restart yet.
-    void OnPlayerDisconnected(const Player& acPlayer) noexcept;
-
     [[nodiscard]] std::optional<Halcyon::ContextId> GetPersonalContext(const Player& acPlayer) const noexcept;
 
     // Records an Actor life state inside the acting Player's Personal Context.
@@ -56,7 +53,18 @@ struct ContextService
     // meaning the caller must fall back to base game data.
     [[nodiscard]] std::optional<bool> GetObservedLifeState(const Player& acObserver, Halcyon::EntityId aEntity) const noexcept;
 
+    // Drops per-Session state for a leaving Player. The Context and its scoped
+    // state are intentionally kept.
+    void OnPlayerDisconnected(const Player& acPlayer) noexcept;
+
     [[nodiscard]] const Halcyon::ContextRegistry& GetRegistry() const noexcept { return m_registry; }
+
+protected:
+    void OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept;
+
+    // Keeps the Context and its scoped state: RFC-0001 step 10 requires them to
+    // outlive the Session. Nothing persists them across a restart yet.
+    void OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept;
 
 private:
     // Maps a live Player to the stable Context-side identity. Player::GetId is
@@ -77,4 +85,7 @@ private:
     // Monotonic per-service revision. Sufficient while one server owns all
     // mutations; a distributed writer would need a different scheme.
     Halcyon::Revision m_nextRevision{1};
+
+    entt::scoped_connection m_playerJoinConnection;
+    entt::scoped_connection m_playerLeaveConnection;
 };
