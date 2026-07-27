@@ -12,10 +12,15 @@ RFC-0001 defines (`ScopedLifeState`). It answers a single question:
 
 > given a Player, which scoped values may that Player observe?
 
-It performs no replication, no persistence, no serialization, and no protocol
-work, and it is not wired into `Code/server`. Those belong to later steps of
-RFC-0001 and are deliberately absent so that the open question about Context ID
-placement in the protocol stays open.
+`ContextStore.h` adds a text-file snapshot so that answer survives a restart.
+
+It performs no replication and no protocol work. Wiring into the server lives in
+`Code/server/Services/ContextService`, which is disabled by default; the open
+question about Context ID placement in the protocol is deliberately left open.
+
+`ContextStore` is **not** the persistence architecture of HTDS-170: no database,
+no transactions, no schema migration, no audit trail, and no fsync. It is the
+smallest thing that lets RFC-0001 steps 9-10 be exercised.
 
 ## Build
 
@@ -46,3 +51,14 @@ look symmetrical with the other components.
   performance one; HTDS-200 lists efficient Context indexing as an open question.
 - **Not thread-safe.** The prototype assumes it is driven from the server tick,
   like the existing services in `Code/server`.
+- **Loading is all-or-nothing.** A malformed store is refused outright instead
+  of being applied up to the bad line, so a truncated file cannot silently drop
+  half the scoped state. Saving writes to a temporary file and renames over the
+  target, so an interrupted write leaves the previous snapshot intact. Neither
+  is a durability guarantee: without fsync a host crash can still lose the most
+  recent save.
+- **Account identity is weak.** `ContextService` recognises a returning Player
+  by their username, which the server neither verifies nor requires to be
+  unique. Two Players claiming one name share a Personal Context. This is
+  survivable for a local prototype and must be replaced before Contexts carry
+  anything durable on a public server.

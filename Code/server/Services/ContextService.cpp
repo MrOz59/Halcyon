@@ -5,6 +5,8 @@
 #include <Game/Player.h>
 #include <World.h>
 
+#include <cctype>
+
 ContextService::ContextService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
     , m_playerJoinConnection(aDispatcher.sink<PlayerJoinEvent>().connect<&ContextService::OnPlayerJoin>(this))
@@ -26,6 +28,29 @@ void ContextService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
         return;
 
     OnPlayerDisconnected(*acEvent.pPlayer);
+
+    // Persist on leave so scoped state survives an unclean shutdown that never
+    // reaches a graceful save.
+    if (m_enabled)
+        Save();
+}
+
+std::string ContextService::MakeAccountKey(const Player& acPlayer) noexcept
+{
+    // The store format is whitespace-separated, so the key must not contain
+    // any. Usernames are player-supplied and unvalidated, hence the scrubbing.
+    std::string key(acPlayer.GetUsername().c_str());
+
+    for (char& character : key)
+    {
+        if (std::isspace(static_cast<unsigned char>(character)))
+            character = '_';
+    }
+
+    if (key.empty())
+        key = "anonymous";
+
+    return key;
 }
 
 std::optional<Halcyon::PlayerId> ContextService::FindPlayerId(const Player& acPlayer) const noexcept
@@ -43,17 +68,33 @@ Halcyon::ContextId ContextService::EnsurePersonalContext(Player& aPlayer) noexce
         return Halcyon::kInvalidContextId;
 
     auto playerId = FindPlayerId(aPlayer);
+
     if (!playerId)
     {
-        playerId = m_nextPlayerId++;
+        // Recognise a returning Player by account key before allocating a new
+        // identity, so a restored Context is rejoined rather than duplicated.
+        const std::string accountKey = MakeAccountKey(aPlayer);
+
+        const auto known = m_accountKeys.find(accountKey);
+        if (known != m_accountKeys.end())
+        {
+            playerId = known->second;
+        }
+        else
+        {
+            playerId = m_nextPlayerId++;
+            m_accountKeys.emplace(accountKey, *playerId);
+            m_playerAccountKeys.emplace(*playerId, accountKey);
+        }
+
         m_playerIds.emplace(aPlayer.GetId(), *playerId);
     }
 
     const auto existing = m_personalContexts.find(*playerId);
     if (existing != m_personalContexts.end())
     {
-        // Re-joining an existing Context, e.g. after a reconnect within the
-        // same server run.
+        // Rejoining a Context from earlier in this run, or one restored from
+        // the persisted snapshot.
         m_registry.AddMember(existing->second, *playerId);
         return existing->second;
     }
@@ -65,6 +106,91 @@ Halcyon::ContextId ContextService::EnsurePersonalContext(Player& aPlayer) noexce
     spdlog::debug("Context {} created for player {:x}", context, aPlayer.GetId());
 
     return context;
+}
+
+bool ContextService::Save() noexcept
+{
+    if (!m_enabled)
+        return false;
+
+    Halcyon::ContextSnapshot snapshot;
+    snapshot.nextContextId = m_registry.PeekNextContextId();
+    snapshot.nextRevision = m_nextRevision;
+    snapshot.lifeStates = m_registry.GetAllLifeStates();
+
+    for (const auto& [playerId, context] : m_personalContexts)
+    {
+        const auto keyIt = m_playerAccountKeys.find(playerId);
+        if (keyIt == m_playerAccountKeys.end())
+            continue;
+
+        Halcyon::PersistentMembership membership;
+        membership.accountKey = keyIt->second;
+        membership.context = context;
+        membership.kind = Halcyon::ContextKind::Personal;
+        snapshot.memberships.push_back(membership);
+    }
+
+    if (!Halcyon::ContextStore::SaveToFile(snapshot, m_storePath))
+    {
+        spdlog::error("Failed to save context store to {}", m_storePath);
+        return false;
+    }
+
+    spdlog::debug("Saved {} contexts and {} scoped states", snapshot.memberships.size(), snapshot.lifeStates.size());
+
+    return true;
+}
+
+bool ContextService::Load() noexcept
+{
+    if (!m_enabled)
+        return false;
+
+    if (!Halcyon::ContextStore::FileExists(m_storePath))
+    {
+        // A first run is not a failure.
+        return false;
+    }
+
+    Halcyon::ContextSnapshot snapshot;
+    if (!Halcyon::ContextStore::LoadFromFile(m_storePath, snapshot))
+    {
+        // Refuse to start from a file that cannot be parsed rather than
+        // silently continuing with empty state and overwriting it on the next
+        // save.
+        spdlog::error("Context store at {} is unreadable or malformed; scoped state was NOT loaded", m_storePath);
+        return false;
+    }
+
+    for (const auto& membership : snapshot.memberships)
+    {
+        const Halcyon::PlayerId playerId = m_nextPlayerId++;
+
+        m_accountKeys.emplace(membership.accountKey, playerId);
+        m_playerAccountKeys.emplace(playerId, membership.accountKey);
+
+        if (!m_registry.RestoreContext(membership.context, membership.kind, 0))
+        {
+            spdlog::warn("Duplicate context {} in store, skipping", membership.context);
+            continue;
+        }
+
+        m_registry.AddMember(membership.context, playerId);
+        m_personalContexts.emplace(playerId, membership.context);
+    }
+
+    for (const auto& state : snapshot.lifeStates)
+    {
+        if (!m_registry.RestoreLifeState(state))
+            spdlog::warn("Scoped state for unknown context {} in store, skipping", state.context);
+    }
+
+    m_nextRevision = snapshot.nextRevision;
+
+    spdlog::info("Loaded {} contexts and {} scoped states from {}", snapshot.memberships.size(), snapshot.lifeStates.size(), m_storePath);
+
+    return true;
 }
 
 void ContextService::OnPlayerDisconnected(const Player& acPlayer) noexcept

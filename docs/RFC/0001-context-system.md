@@ -166,13 +166,34 @@ Covered by unit tests in `Code/tests/contexts.cpp` and
 `Code/tests/contextservice.cpp`, including the divergence described in steps 1-8
 of the prototype scenario and the recipient rule for scoped notifications.
 
+Implemented in `Code/components/contexts/ContextStore.h`:
+
+- a versioned line-oriented snapshot of Context membership and scoped Life
+  State, saved on Player leave and loaded on demand;
+- all-or-nothing parsing: a malformed store is refused outright rather than
+  applied up to the bad record;
+- save via write-to-temporary-and-rename, so an interrupted write leaves the
+  previous snapshot intact.
+
+This is **not** the persistence model of HTDS-170. There is no database, no
+transaction boundary, no schema migration, no audit trail, and no `fsync`, so a
+host crash can still lose the most recent save. It is the smallest mechanism
+that lets steps 9-10 be exercised.
+
 Not implemented:
 
-- **Persistence.** The registry is in-memory only. `Player::GetId` is a
-  per-process counter, so Context membership does not survive a restart and
-  steps 9-10 of the scenario are unverified.
+- **Trustworthy account identity.** A returning Player is recognised by the
+  username from `AuthenticationRequest`. The server neither verifies a
+  credential nor enforces username uniqueness, so two Players claiming one name
+  share a Personal Context and its scoped state. Acceptable for a local
+  two-client prototype; **must** be replaced before Contexts carry anything
+  durable on a public server.
 - **Enabling the prototype.** Nothing exposes `SetEnabled`; there is no console
-  command, setting, or capability yet, so the path is unreachable at runtime.
+  command, setting, or capability yet, so the path is unreachable at runtime and
+  `Load` is never called during startup.
+- **Verification against a real restart.** Steps 9-10 are covered by unit tests
+  over the store and registry only. No server has been restarted with two
+  clients attached.
 - **Protocol.** No capability, membership snapshot, scoped Life State message,
   or resync request exists. The open question about Context ID placement remains
   unanswered and is deliberately not pre-empted by the current types.

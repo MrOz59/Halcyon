@@ -14,10 +14,12 @@
 // See docs/RFC/0001-context-system.md.
 
 #include <contexts/ContextRegistry.h>
+#include <contexts/ContextStore.h>
 
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <string>
 
 struct World;
 struct Player;
@@ -57,6 +59,17 @@ struct ContextService
     // state are intentionally kept.
     void OnPlayerDisconnected(const Player& acPlayer) noexcept;
 
+    // Persistence. Both are no-ops while the prototype is disabled.
+    //
+    // Save is called on Player leave and at shutdown rather than on every
+    // mutation: the prototype favours a simple, obviously-correct write over
+    // the transactional model HTDS-170 describes.
+    bool Save() noexcept;
+    bool Load() noexcept;
+
+    void SetStorePath(std::string aPath) noexcept { m_storePath = std::move(aPath); }
+    [[nodiscard]] const std::string& GetStorePath() const noexcept { return m_storePath; }
+
     [[nodiscard]] const Halcyon::ContextRegistry& GetRegistry() const noexcept { return m_registry; }
 
 protected:
@@ -67,20 +80,36 @@ protected:
     void OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept;
 
 private:
-    // Maps a live Player to the stable Context-side identity. Player::GetId is
-    // a per-process counter that restarts with the server, so it cannot be the
-    // PlayerId itself; this indirection is where a persistent account id will
-    // be substituted once persistence exists.
+    // The identity a returning Player is recognised by across restarts.
+    //
+    // WARNING: this is derived from the username supplied in
+    // AuthenticationRequest, and the server does not currently enforce
+    // username uniqueness or verify any credential. Two Players claiming the
+    // same name therefore share a Personal Context and its scoped state. That
+    // is acceptable for a local two-client prototype and is NOT acceptable on
+    // a public server; a real account identity must replace this before the
+    // Context system carries anything durable. See the RFC status section.
+    [[nodiscard]] static std::string MakeAccountKey(const Player& acPlayer) noexcept;
+
+    // Maps a live Player to the Context-side identity. Player::GetId is a
+    // per-process counter that restarts with the server, so it addresses the
+    // Session while the account key addresses the durable identity.
     [[nodiscard]] std::optional<Halcyon::PlayerId> FindPlayerId(const Player& acPlayer) const noexcept;
 
     World& m_world;
     bool m_enabled{false};
+    std::string m_storePath{"config/halcyon-contexts.txt"};
 
     Halcyon::ContextRegistry m_registry;
 
     Halcyon::PlayerId m_nextPlayerId{1};
     std::map<uint32_t, Halcyon::PlayerId> m_playerIds;
     std::map<Halcyon::PlayerId, Halcyon::ContextId> m_personalContexts;
+
+    // Durable identity: account key <-> PlayerId. Populated on join and from
+    // the persisted snapshot on load.
+    std::map<std::string, Halcyon::PlayerId> m_accountKeys;
+    std::map<Halcyon::PlayerId, std::string> m_playerAccountKeys;
 
     // Monotonic per-service revision. Sufficient while one server owns all
     // mutations; a distributed writer would need a different scheme.

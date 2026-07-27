@@ -167,6 +167,60 @@ public:
 
     [[nodiscard]] std::size_t GetContextCount() const { return m_contexts.size(); }
 
+    // Recreates a Context with an id issued in an earlier run. Used only when
+    // restoring persisted state; normal allocation goes through CreateContext.
+    // Returns false when the id is invalid or already present, so a corrupt
+    // snapshot cannot silently collide with live state.
+    bool RestoreContext(ContextId aContext, ContextKind aKind, Revision aRevision)
+    {
+        if (aContext == kInvalidContextId || HasContext(aContext))
+            return false;
+
+        m_contexts.emplace(aContext, Context{aContext, aKind, aRevision});
+
+        // Keep allocation ahead of every restored id.
+        if (aContext >= m_nextContextId)
+            m_nextContextId = aContext + 1;
+
+        return true;
+    }
+
+    // Restores a scoped value without the newer-revision check, which only
+    // applies to live mutations. Returns false for an unknown Context.
+    bool RestoreLifeState(const ScopedLifeState& acState)
+    {
+        if (!HasContext(acState.context))
+            return false;
+
+        m_lifeStates[Key{acState.context, acState.entity}] = acState;
+        return true;
+    }
+
+    // Every scoped value held, for snapshotting.
+    [[nodiscard]] std::vector<ScopedLifeState> GetAllLifeStates() const
+    {
+        std::vector<ScopedLifeState> states;
+        states.reserve(m_lifeStates.size());
+
+        for (const auto& [key, state] : m_lifeStates)
+            states.push_back(state);
+
+        return states;
+    }
+
+    [[nodiscard]] std::vector<ContextId> GetAllContexts() const
+    {
+        std::vector<ContextId> contexts;
+        contexts.reserve(m_contexts.size());
+
+        for (const auto& [id, context] : m_contexts)
+            contexts.push_back(id);
+
+        return contexts;
+    }
+
+    [[nodiscard]] ContextId PeekNextContextId() const { return m_nextContextId; }
+
 private:
     struct Key
     {
