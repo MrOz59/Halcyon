@@ -29,7 +29,10 @@ DST="$GAMEDIR/Data/SkyrimTogetherReborn"
 
 # Native Linux server, as produced by the halcyon-linux-server workflow. It is
 # a thin runner next to libSTServer.so; both must sit in the same directory.
-NATIVE_DIR="${HALCYON_NATIVE_DIR:-$(dirname "$0")/Halcyon Linux Server}"
+#
+# Resolved to an absolute path: the launch path cds into the run directory, and
+# a relative NATIVE_DIR would stop resolving from there.
+NATIVE_DIR="${HALCYON_NATIVE_DIR:-$(cd "$(dirname "$0")" && pwd)/Halcyon Linux Server}"
 
 # IMPORTANT: use the same Proton the game is launched with, and a SEPARATE prefix.
 # Running this in the game's prefix (compatdata/489830) rewrites its `version`
@@ -53,7 +56,11 @@ fi
 
 if [ "$BACKEND" = native ]; then
     RUNDIR="$NATIVE_DIR"
-    PROCPAT="$NATIVE_DIR/SkyrimTogetherServer"
+    # The server is launched after a cd into RUNDIR, so it shows up in the
+    # process table as "./SkyrimTogetherServer". Matching the full path here
+    # would never hit, making status report a running server as stopped and
+    # leaving stop unable to kill it.
+    PROCPAT='\./SkyrimTogetherServer$'
 else
     RUNDIR="$DST"
     PROCPAT=SkyrimTogetherServer.exe
@@ -200,14 +207,18 @@ sleep 1
 # The server rewrites config/STServer.ini on shutdown (it registers its settings
 # after load), so edit it only while the server is stopped -- which is here.
 mkdir -p "$RUNDIR/config"
-if [ -f "$INI" ] && grep -q '^bPremiumMode' "$INI"; then
-    sed -i "s/^bPremiumMode=.*/bPremiumMode=$PREMIUM/" "$INI"
+if [ -f "$INI" ]; then
+    ini_set GameServer bPremiumMode "$PREMIUM"
     echo "set bPremiumMode=$PREMIUM in STServer.ini"
-elif [ ! -f "$INI" ]; then
+else
     # First run: the server generates the file itself with sane defaults
     # (bPremiumMode=true, bEnableModCheck=false), so nothing to seed.
     echo "no STServer.ini yet - the server will generate it (defaults to 60 Hz)"
 fi
+
+# Capture the setting while the file is still stable, before the server starts
+# rewriting it.
+WANT_CONTEXTS="$(ini_get Halcyon bEnableContexts)"
 
 : >"$OUTLOG"
 # NOTE: the server console uses uv_tty and only reads from a real terminal, so
@@ -236,10 +247,12 @@ echo "starting $BACKEND server (premium=$PREMIUM -> $([ "$PREMIUM" = true ] && e
 [ "$BACKEND" = native ] && sleep 3 || sleep 12
 tail -25 "$OUTLOG"
 
-case "$(ini_get Halcyon bEnableContexts)" in
+# Read from the value staged before launch: the server rewrites STServer.ini
+# itself, so reading it back here can catch the file mid-rewrite.
+case "$WANT_CONTEXTS" in
 true) CONTEXTS_STATE="ENABLED (unvalidated prototype, RFC-0001)" ;;
 false) CONTEXTS_STATE="disabled" ;;
-*) CONTEXTS_STATE="disabled (key not present in this build)" ;;
+*) CONTEXTS_STATE="not set (server defaults it to disabled)" ;;
 esac
 
 LANIP=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{sub(/\/.*/,"",$2); print $2; exit}')
