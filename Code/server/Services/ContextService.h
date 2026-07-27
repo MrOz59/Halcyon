@@ -33,10 +33,19 @@ struct ContextService
 
     TP_NOCOPYMOVE(ContextService);
 
-    // The prototype is opt-in. While disabled the service records nothing and
-    // reports no scoped state, which keeps the legacy global broadcast the only
-    // source of Actor life state.
+    // The prototype is opt-in, driven by the Halcyon:bEnableContexts setting in
+    // STServer.ini. While disabled the service records nothing and reports no
+    // scoped state, which keeps the legacy global broadcast the only source of
+    // Actor life state.
     [[nodiscard]] bool IsEnabled() const noexcept { return m_enabled; }
+
+    // Applies the current setting value, loading persisted state on the
+    // transition to enabled. Called when Players join, because settings are
+    // read from the ini after services are constructed.
+    void SyncEnabledFromSettings() noexcept;
+
+    // Overrides the setting. Intended for tests and for callers that manage the
+    // flag directly; normal operation goes through SyncEnabledFromSettings.
     void SetEnabled(bool aEnabled) noexcept { m_enabled = aEnabled; }
 
     // Assigns the Player a Personal Context, creating one on first use.

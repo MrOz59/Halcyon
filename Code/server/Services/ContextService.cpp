@@ -7,15 +7,48 @@
 
 #include <cctype>
 
+// Halcyon Context prototype (RFC-0001). Off by default: enabling it changes how
+// Actor death is replicated, and the prototype is not validated. See
+// docs/RFC/0001-context-system.md before turning this on.
+Console::Setting bEnableContexts{"Halcyon:bEnableContexts", "(Prototype, unvalidated) Isolate quest-critical actor death per player Context", false};
+
 ContextService::ContextService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
     , m_playerJoinConnection(aDispatcher.sink<PlayerJoinEvent>().connect<&ContextService::OnPlayerJoin>(this))
     , m_playerLeaveConnection(aDispatcher.sink<PlayerLeaveEvent>().connect<&ContextService::OnPlayerLeave>(this))
 {
+    // Settings are registered before this runs but are loaded from the ini
+    // afterwards, so the value is picked up on first use rather than here.
+}
+
+void ContextService::SyncEnabledFromSettings() noexcept
+{
+    const bool enabled = bEnableContexts;
+
+    if (enabled == m_enabled)
+        return;
+
+    m_enabled = enabled;
+
+    if (!m_enabled)
+    {
+        spdlog::info("Halcyon Context prototype disabled");
+        return;
+    }
+
+    spdlog::warn("Halcyon Context prototype ENABLED - actor death is scoped per player Context. This is an unvalidated prototype (RFC-0001).");
+
+    // Restore whatever a previous run persisted, now that the prototype is
+    // known to be on.
+    Load();
 }
 
 void ContextService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
 {
+    // First Player join is the earliest point where the ini has certainly been
+    // applied, so the flag is resolved here rather than in the constructor.
+    SyncEnabledFromSettings();
+
     if (!m_enabled || !acEvent.pPlayer)
         return;
 
