@@ -180,8 +180,42 @@ transaction boundary, no schema migration, no audit trail, and no `fsync`, so a
 host crash can still lose the most recent save. It is the smallest mechanism
 that lets steps 9-10 be exercised.
 
+### First live test, 2026-07-27
+
+Two clients, native Linux server, prototype enabled. Findings:
+
+**Persistence works.** Two Personal Contexts were created, written to
+`config/halcyon-contexts.txt` on leave, and reloaded on the next start
+(`Loaded 2 contexts`). Account keys resolved as intended.
+
+**Scoping did not happen.** The store recorded `0 scoped states` and both
+clients saw the killed NPCs die. The cause is a second death path that the
+prototype does not intercept:
+
+| Path | Location | Covered |
+| --- | --- | --- |
+| `RequestDeathStateChange` | `ActorValueService::OnDeathStateChange` | yes |
+| `ActorData.IsDead` carried by spawn and ownership transfer | `CharacterService` (`ApplyActorData`, `CreateCharacter`) | **no** |
+
+The second path dominates in practice: the same session logged 56 ownership
+transfers in a few minutes. When an NPC dies and its ownership moves between
+clients, the death travels inside the ownership packet's `ActorData` and never
+reaches `OnDeathStateChange`.
+
+This is risk 2 of this document, confirmed in the field rather than inferred.
+Covering it means intercepting `BuildActorData` / `ApplyActorData`, which sit on
+the spawn and ownership-transfer path used by every NPC — materially more
+invasive than the current change.
+
+**Unrelated observation.** A guard appeared frozen and non-reactive on the
+second client until it changed target, after which its animations resumed but
+its weapon was invisible and its AI erratic. This matches ownership-transfer
+behaviour in the existing Tilted Evolution synchronization and is not caused by
+Contexts: no scoped state existed at the time.
+
 Not implemented:
 
+- **The ownership death path.** See the table above.
 - **Trustworthy account identity.** A returning Player is recognised by the
   username from `AuthenticationRequest`. The server neither verifies a
   credential nor enforces username uniqueness, so two Players claiming one name
