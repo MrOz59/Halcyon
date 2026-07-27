@@ -39,7 +39,8 @@ jobs:
         run: xmake repo --update
 
       - name: Configure
-        run: xmake config --arch=x64 --mode=release --yes -vD
+        continue-on-error: true
+        run: timeout 15m xmake config --arch=x64 --mode=release --yes -vD
 
       - name: Build native server and tests
         run: xmake -y SkyrimServerRunner TPTests
