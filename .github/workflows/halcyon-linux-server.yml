@@ -42,8 +42,11 @@ jobs:
         continue-on-error: true
         run: timeout 15m xmake config --arch=x64 --mode=release --yes -vD
 
-      - name: Build native server and tests
-        run: xmake -y SkyrimServerRunner TPTests
+      - name: Build native server
+        run: xmake -y SkyrimServerRunner
+
+      - name: Build tests
+        run: xmake -y TPTests
 
       - name: Run tests
         run: ./build/linux/x64/release/TPTests
