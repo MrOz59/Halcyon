@@ -16,6 +16,7 @@
 #include <Services/WeatherService.h>
 #include <Services/ScriptService.h>
 #include <Services/MapService.h>
+#include <Services/ContextService.h>
 
 #include <es_loader/ESLoader.h>
 
@@ -41,6 +42,10 @@ World::World()
     ctx().emplace<CombatService>(*this, m_dispatcher);
     ctx().emplace<WeatherService>(*this, m_dispatcher);
     ctx().emplace<MapService>(*this, m_dispatcher);
+
+    // Halcyon Context prototype (RFC-0001). Disabled by default: it records
+    // nothing and affects no replication until explicitly enabled.
+    ctx().emplace<ContextService>(*this);
 
     ESLoader::ESLoader loader;
     // emplace loaded mods into modscomponent.

@@ -7,7 +7,9 @@ local function build_server()
     set_group("Server")
     add_includedirs(
         ".",
-        "../../Libraries/")
+        "../../Libraries/",
+        -- Header-only Halcyon Context prototype; see Code/components/contexts.
+        "../components")
     set_pcxxheader("Pch.h")
     add_headerfiles("**.h")
     add_files("**.cpp")

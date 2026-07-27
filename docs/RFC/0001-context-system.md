@@ -138,23 +138,42 @@ Implemented in `Code/components/contexts/`:
   the scoped Life State store, stale-revision rejection, and the replication rule
   from this document expressed as `IsVisibleTo` / `GetVisibleLifeStates`.
 
-Covered by unit tests in `Code/tests/contexts.cpp`, including the divergence
-described in steps 1-8 of the prototype scenario.
+Implemented in `Code/server/Services/ContextService.{h,cpp}`:
+
+- Personal Context allocation per Player, registered in `World` and reachable
+  through `World::GetContextService`;
+- translation from the server's `Player::GetId` to a Context-side `PlayerId`;
+- `RecordLifeState` / `GetObservedLifeState`, the entry points a Context-aware
+  replication path would call.
+
+**The service is disabled by default and no gameplay path calls it.** While
+disabled every entry point is inert, so the legacy global broadcast remains the
+only source of Actor life state and existing behaviour is unchanged.
+
+Covered by unit tests in `Code/tests/contexts.cpp` and
+`Code/tests/contextservice.cpp`, including the divergence described in steps 1-8
+of the prototype scenario.
 
 Not implemented:
 
-- **Persistence.** Nothing in the section above is stored; the registry is
-  in-memory only, so steps 9-10 of the scenario are unverified.
+- **Death does not reach the service.** `CharacterService::BroadcastActorData`
+  still applies one `CharacterComponent` per Entity and sends it to everyone in
+  range via `GameServer::SendToPlayersInRange`, which filters by distance only.
+  This is risk 2 below, confirmed in the current code: there is as yet nowhere
+  to hold two divergent values for one Actor.
+- **Persistence.** The registry is in-memory only. `Player::GetId` is a
+  per-process counter, so Context membership does not survive a restart and
+  steps 9-10 of the scenario are unverified.
 - **Protocol.** No capability, membership snapshot, scoped Life State message,
   or resync request exists. The open question about Context ID placement remains
   unanswered and is deliberately not pre-empted by the current types.
-- **Client and world integration.** The registry is not wired into `Code/server`;
-  no gameplay path reads or writes it, and no Actor death reaches it.
+- **Client.** No client change has been made; the client cannot yet render
+  divergent state.
 - **Every risk listed below.** All concern live Skyrim behavior and remain
   entirely untested.
 
-The registry is a standalone module: validating its state transitions is a
-precondition for the RFC, not evidence that the RFC succeeds.
+Validating these state transitions is a precondition for the RFC, not evidence
+that the RFC succeeds.
 
 ## Open Questions
 
